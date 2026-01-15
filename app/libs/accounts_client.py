@@ -4,7 +4,12 @@ from mcp import StdioServerParameters
 from agents import FunctionTool
 import json
 
-params = StdioServerParameters(command="uv", args=["run", "accounts_server.py"], env=None)
+# Run via module path so imports resolve from project root.
+params = StdioServerParameters(
+    command="uv",
+    args=["run", "-m", "app.mcp_servers.accounts_server"],
+    env=None,
+)
 
 
 async def list_accounts_tools():

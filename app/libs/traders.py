@@ -12,6 +12,7 @@ from agents import Agent, Tool, Runner, OpenAIChatCompletionsModel, trace
 from agents.mcp import MCPServerStdio
 
 from app.libs.accounts_client import read_accounts_resource, read_strategy_resource
+from app.libs.mcp_rate_limiter import RateLimitedMCPServerStdio, get_rate_limiter
 from app.libs.tracers import make_trace_id
 from app.libs.templates import (
     researcher_instructions,
@@ -29,6 +30,50 @@ from app.mcp_servers.mcp_params import (
 load_dotenv(override=True)
 
 MAX_TURNS = 30
+
+_STDIO_PARAM_KEYS = {
+    "command",
+    "args",
+    "env",
+    "cwd",
+    "encoding",
+    "encoding_error_handler",
+}
+
+
+def _parse_rate_limit_rps(value):
+    if value is None:
+        return None
+    try:
+        rps = float(value)
+    except (TypeError, ValueError):
+        return None
+    return rps if rps > 0 else None
+
+
+def _stdio_params(params: dict) -> dict:
+    return {key: params[key] for key in _STDIO_PARAM_KEYS if key in params}
+
+
+def _build_mcp_stdio_server(params: dict, client_session_timeout_seconds: float):
+    rate_limit_rps = _parse_rate_limit_rps(params.get("rate_limit_rps"))
+    stdio_params = _stdio_params(params)
+    server_kwargs = {
+        "client_session_timeout_seconds": client_session_timeout_seconds,
+    }
+    if "use_structured_content" in params:
+        server_kwargs["use_structured_content"] = bool(params["use_structured_content"])
+    if rate_limit_rps:
+        limiter = get_rate_limiter(rate_limit_rps)
+        return RateLimitedMCPServerStdio(
+            stdio_params,
+            rate_limiter=limiter,
+            **server_kwargs,
+        )
+    return MCPServerStdio(
+        stdio_params,
+        **server_kwargs,
+    )
 
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY", "")
 DEEPSEEK_BASE_URL = "https://api.deepseek.com/v1"
@@ -132,7 +177,9 @@ class Trader:
         async with AsyncExitStack() as stack:
             trader_mcp_servers = [
                 await stack.enter_async_context(
-                    MCPServerStdio(params, client_session_timeout_seconds=120)
+                    _build_mcp_stdio_server(
+                        params, client_session_timeout_seconds=120
+                    )
                 )
                 for params in trader_mcp_server_params
             ]
@@ -140,7 +187,9 @@ class Trader:
             researcher_params_list = researcher_mcp_server_params(self.name)
             researcher_mcp_servers = [
                 await stack.enter_async_context(
-                    MCPServerStdio(params, client_session_timeout_seconds=120)
+                    _build_mcp_stdio_server(
+                        params, client_session_timeout_seconds=120
+                    )
                 )
                 for params in researcher_params_list
             ]

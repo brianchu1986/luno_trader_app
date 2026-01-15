@@ -20,7 +20,17 @@ MEMORY_DIR.mkdir(parents=True, exist_ok=True)
 # -------------------------------------------------
 # Env vars
 # -------------------------------------------------
+def _float_env(name: str, default: float) -> float:
+    raw = os.getenv(name, "")
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return default
+    return value if value > 0 else default
+
+
 BRAVE_API_KEY = os.getenv("BRAVE_SEARCH_API")
+BRAVE_REQUESTS_PER_SECOND = _float_env("BRAVE_REQUESTS_PER_SECOND", 1.0)
 
 brave_env = {}
 if BRAVE_API_KEY:
@@ -47,30 +57,32 @@ trader_mcp_server_params = [
 # -------------------------------------------------
 def researcher_mcp_server_params(name: str):
     params = [
-        # # Simple fetch server
-        # {
-        #     "command": "uvx",
-        #     "args": ["mcp-server-fetch"],
-        # },
+        # Simple fetch server
+        {
+            "command": "uvx",
+            "args": ["mcp-server-fetch"],
+        },
     ]
 
-    # # Brave search (only if API key exists)
-    # if brave_env:
-    #     params.append(
-    #         {
-    #             "command": "npx",
-    #             "args": ["-y", "@modelcontextprotocol/server-brave-search"],
-    #             "env": brave_env,
-    #         }
-    #     )
+    # Brave search (only if API key exists)
+    if brave_env:
+        params.append(
+            {
+                "command": "npx",
+                "args": ["-y", "@modelcontextprotocol/server-brave-search"],
+                "env": brave_env,
+                "rate_limit_rps": BRAVE_REQUESTS_PER_SECOND,
+                "use_structured_content": True,
+            }
+        )
 
-    # # Memory (per-trader persistent memory)
-    # params.append(
-    #     {
-    #         "command": "npx",
-    #         "args": ["-y", "mcp-memory-libsql"],
-    #         "env": {"LIBSQL_URL": f"file:{MEMORY_DIR / f'{name}.db'}"},
-    #     }
-    # )
+    # Memory (per-trader persistent memory)
+    params.append(
+        {
+            "command": "npx",
+            "args": ["-y", "mcp-memory-libsql"],
+            "env": {"LIBSQL_URL": f"file:{MEMORY_DIR / f'{name}.db'}"},
+        }
+    )
 
     return params

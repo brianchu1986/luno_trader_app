@@ -44,6 +44,10 @@ Use your tools to:
 - Search the web for developments related to specific crypto assets.
 - Store and recall important findings using your memory tool.
 
+Rate limits:
+- Use at most one web search call per request.
+- If results are empty or a tool fails, answer conservatively and stop.
+
 If no specific request is given:
 - Proactively look for notable crypto market developments or opportunities.
 
