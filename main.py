@@ -102,6 +102,12 @@ def parse_args() -> argparse.Namespace:
         help="Optional log level override (DEBUG/INFO/...)",
     )
     p.add_argument(
+        "--timeout-seconds",
+        type=int,
+        default=None,
+        help="Override per-trader timeout in seconds (env TRADER_TIMEOUT_SECONDS)",
+    )
+    p.add_argument(
         "--live",
         action="store_true",
         help="Run in LIVE mode (default is dry_run)",
@@ -113,10 +119,18 @@ def resolve_config(args: argparse.Namespace) -> dict:
     # RUN_EVERY_MINUTES reads from env by default
     run_every_env = int(os.getenv("RUN_EVERY_N_MINUTES", "10"))
     use_many_env = str_to_bool(os.getenv("USE_MANY_MODELS", "false"))
+    timeout_env_raw = os.getenv("TRADER_TIMEOUT_SECONDS", str(TRADER_TIMEOUT_SECONDS))
+    try:
+        timeout_env = int(timeout_env_raw)
+    except ValueError:
+        timeout_env = TRADER_TIMEOUT_SECONDS
 
     run_every = args.run_every or run_every_env
     use_many_models = bool(args.many_models) or use_many_env
     account_type = "live" if args.live else "dry_run"
+    timeout_seconds = args.timeout_seconds or timeout_env
+    if timeout_seconds <= 0:
+        timeout_seconds = TRADER_TIMEOUT_SECONDS
 
     default_names = [
         "Warren",
@@ -160,6 +174,7 @@ def resolve_config(args: argparse.Namespace) -> dict:
         "once": bool(args.once),
         "log_level": args.log_level or os.getenv("LOG_LEVEL"),
         "account_type": account_type,
+        "timeout_seconds": int(timeout_seconds),
     }
 
 
@@ -261,6 +276,9 @@ def main() -> None:
     load_env()
     args = parse_args()
     cfg = resolve_config(args)
+
+    global TRADER_TIMEOUT_SECONDS
+    TRADER_TIMEOUT_SECONDS = cfg["timeout_seconds"]
 
     setup_logging(cfg["log_level"])
     apply_account_type(cfg["names"], cfg["account_type"])

@@ -82,3 +82,8 @@ htmlcov/
 *.tmp
 *.swp
 *.bak
+
+# =========================
+# Antivirus files
+# =========================
+_norton_
