@@ -90,6 +90,16 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Use different models per trader (override env USE_MANY_MODELS)",
     )
+    p.add_argument(
+        "--model-default",
+        default=None,
+        help="Override env MODEL_DEFAULT for all traders",
+    )
+    p.add_argument(
+        "--models",
+        default=None,
+        help="Comma-separated model names aligned to trader names (implies many-models)",
+    )
     p.add_argument("--once", action="store_true", help="Run one cycle then exit")
     p.add_argument(
         "--names",
@@ -127,6 +137,7 @@ def resolve_config(args: argparse.Namespace) -> dict:
 
     run_every = args.run_every or run_every_env
     use_many_models = bool(args.many_models) or use_many_env
+    model_default = args.model_default or os.getenv("MODEL_DEFAULT", "gpt-5-mini")
     account_type = "live" if args.live else "dry_run"
     timeout_seconds = args.timeout_seconds or timeout_env
     if timeout_seconds <= 0:
@@ -134,13 +145,13 @@ def resolve_config(args: argparse.Namespace) -> dict:
 
     default_names = [
         "Warren",
-        # "George",
+        "George",
         # "Ray",
         # "Cathie"
     ]
     default_lastnames = [
         "Patience",
-        # "Bold",
+        "Bold",
         # "Systematic",
         # "Crypto"
     ]
@@ -152,16 +163,25 @@ def resolve_config(args: argparse.Namespace) -> dict:
         names = default_names
         lastnames = default_lastnames
 
-    if use_many_models:
+    cli_models = []
+    if args.models:
+        cli_models = [x.strip() for x in args.models.split(",") if x.strip()]
+
+    if cli_models:
+        use_many_models = True
+        model_names = cli_models[: len(names)]
+        if len(model_names) < len(names):
+            model_names += [model_names[-1]] * (len(names) - len(model_names))
+    elif use_many_models:
         model_names = [
-            # os.getenv("MODEL_1", "gpt-5-mini"),
+            os.getenv("MODEL_1", model_default),
             os.getenv("MODEL_2", "deepseek-chat"),
         ]
         model_names = model_names[: len(names)]
         if len(model_names) < len(names):
             model_names += [model_names[-1]] * (len(names) - len(model_names))
     else:
-        model_names = [os.getenv("MODEL_DEFAULT", "gpt-5-mini")] * len(names)
+        model_names = [model_default] * len(names)
 
     config = {
         "run_every_minutes": int(run_every),
