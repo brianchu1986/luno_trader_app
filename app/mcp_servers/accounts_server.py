@@ -39,12 +39,16 @@ async def get_balance(name: str, refresh: bool = False) -> float:
 
     Args:
         name: Account holder name
-        refresh: If true, refresh from Luno before returning
+        refresh: If true, refresh from Luno (live) or seed paper wallet if empty (dry_run)
     """
     acc = Account.get(name)
     if refresh:
-        await _to_thread(acc.refresh_from_luno)
-    return float(acc.balance)
+        if acc.account_type == "dry_run":
+            if acc.paper_balance <= 0 and not acc.paper_holdings:
+                await _to_thread(acc.paper_reset_from_luno)
+        else:
+            await _to_thread(acc.refresh_from_luno)
+    return float(acc.paper_balance if acc.account_type == "dry_run" else acc.balance)
 
 
 @mcp.tool()
@@ -53,23 +57,35 @@ async def get_holdings(name: str, refresh: bool = False) -> dict[str, float]:
 
     Args:
         name: Account holder name
-        refresh: If true, refresh from Luno before returning
+        refresh: If true, refresh from Luno (live) or seed paper wallet if empty (dry_run)
     """
     acc = Account.get(name)
     if refresh:
-        await _to_thread(acc.refresh_from_luno)
-    return acc.holdings
+        if acc.account_type == "dry_run":
+            if acc.paper_balance <= 0 and not acc.paper_holdings:
+                await _to_thread(acc.paper_reset_from_luno)
+        else:
+            await _to_thread(acc.refresh_from_luno)
+    return acc.paper_holdings if acc.account_type == "dry_run" else acc.holdings
 
 
 @mcp.tool()
 async def refresh_account(name: str) -> str:
     """Refresh balance + holdings from Luno (source of truth).
 
+    Dry run behavior:
+    - If paper wallet is empty, seed it from Luno.
+    - If paper wallet already has values, leave it unchanged.
+
     Args:
         name: Account holder name
     """
     acc = Account.get(name)
     try:
+        if acc.account_type == "dry_run":
+            if acc.paper_balance <= 0 and not acc.paper_holdings:
+                return await _to_thread(acc.paper_reset_from_luno)
+            return "OK: Paper wallet unchanged"
         await _to_thread(acc.refresh_from_luno)
         return "OK: Account refreshed"
     except Exception as e:
