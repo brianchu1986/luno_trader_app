@@ -77,6 +77,20 @@ async def refresh_account(name: str) -> str:
 
 
 @mcp.tool()
+async def paper_reset_from_luno(name: str) -> str:
+    """Reset paper wallet using current live balances.
+
+    Args:
+        name: Account holder name
+    """
+    acc = Account.get(name)
+    try:
+        return await _to_thread(acc.paper_reset_from_luno)
+    except Exception as e:
+        return _err("paper_reset_from_luno", e)
+
+
+@mcp.tool()
 async def get_portfolio_value(name: str, refresh: bool = True) -> float:
     """Compute total portfolio value in MYR.
 

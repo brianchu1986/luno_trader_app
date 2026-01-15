@@ -263,16 +263,21 @@ class Account(BaseModel):
 
     # ---------- reporting ----------
     def report(self) -> str:
-        holdings_lines = [f"- {a}: {q}" for a, q in sorted(self.holdings.items())]
+        use_paper = self.account_type == "dry_run"
+        balance = self.paper_balance if use_paper else self.balance
+        holdings = self.paper_holdings if use_paper else self.holdings
+        wallet_label = "paper" if use_paper else "live"
+
+        holdings_lines = [f"- {a}: {q}" for a, q in sorted(holdings.items())]
         holdings_text = "\n".join(holdings_lines) if holdings_lines else "- (empty)"
         cc = get_counter_currency().upper()
 
         return (
             f"Account: **{self.name}**\n"
             f"- Strategy: `{self.strategy}`\n"
-            f"- {cc} Available: **{self.balance:.2f}**\n"
+            f"- {cc} Available ({wallet_label}): **{balance:.2f}**\n"
             f"- {cc} account_id: `{self.account_id}`\n"
-            f"- Holdings (available):\n{holdings_text}\n"
+            f"- Holdings ({wallet_label}):\n{holdings_text}\n"
             f"- Transactions: {len(self.transactions)}\n"
             f"- account_type: `{self.account_type}`"
         )

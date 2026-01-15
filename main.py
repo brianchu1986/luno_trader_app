@@ -13,6 +13,7 @@ from logging.handlers import RotatingFileHandler
 from typing import List
 
 from app import load_env
+from app.libs.account import Account
 from app.libs.tracers import LogTracer
 from app.libs.traders import Trader
 from agents import add_trace_processor
@@ -100,6 +101,11 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Optional log level override (DEBUG/INFO/...)",
     )
+    p.add_argument(
+        "--live",
+        action="store_true",
+        help="Run in LIVE mode (default is dry_run)",
+    )
     return p.parse_args()
 
 
@@ -110,6 +116,7 @@ def resolve_config(args: argparse.Namespace) -> dict:
 
     run_every = args.run_every or run_every_env
     use_many_models = bool(args.many_models) or use_many_env
+    account_type = "live" if args.live else "dry_run"
 
     default_names = [
         "Warren",
@@ -152,7 +159,16 @@ def resolve_config(args: argparse.Namespace) -> dict:
         "model_names": model_names,
         "once": bool(args.once),
         "log_level": args.log_level or os.getenv("LOG_LEVEL"),
+        "account_type": account_type,
     }
+
+
+def apply_account_type(names: List[str], account_type: str) -> None:
+    for name in names:
+        try:
+            Account.get(name).set_account_type(account_type)
+        except Exception as e:
+            log.warning(f"Failed to set account_type for {name}: {e}")
 
 
 # -------------------------
@@ -212,6 +228,7 @@ async def scheduler_loop(cfg: dict) -> None:
     log.info(
         f"✅ Scheduler started | every={run_every}min | jitter≤{JITTER_SECONDS}s | timeout={TRADER_TIMEOUT_SECONDS}s"
     )
+    log.info(f"Run mode: {cfg['account_type']}")
     log.info(f"✅ Traders: {', '.join([t.name for t in traders])}")
 
     stop_event = asyncio.Event()
@@ -246,6 +263,7 @@ def main() -> None:
     cfg = resolve_config(args)
 
     setup_logging(cfg["log_level"])
+    apply_account_type(cfg["names"], cfg["account_type"])
 
     try:
         asyncio.run(scheduler_loop(cfg))
