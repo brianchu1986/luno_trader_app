@@ -109,6 +109,14 @@ def read_account(name: str) -> Optional[Dict[str, Any]]:
         return None
 
 
+def list_account_names() -> List[str]:
+    with _connect() as conn:
+        rows = conn.execute(
+            "SELECT name FROM accounts ORDER BY name ASC"
+        ).fetchall()
+    return [str(r["name"]) for r in rows]
+
+
 def write_log(name: str, type: str, message: str) -> None:
     """
     Store logs in UTC for consistency across servers/timezones.

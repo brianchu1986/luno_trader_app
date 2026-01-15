@@ -40,16 +40,12 @@ async def get_balance(name: str, refresh: bool = False) -> float:
 
     Args:
         name: Account holder name
-        refresh: If true, refresh from Luno (live) or seed paper wallet if empty (dry_run)
+        refresh: If true, refresh counter balance from Luno (live only)
     """
     acc = Account.get(name)
-    if refresh:
-        if acc.account_type == "dry_run":
-            if acc.paper_balance <= 0 and not acc.paper_holdings:
-                await _to_thread(acc.paper_reset_from_luno)
-        else:
-            await _to_thread(acc.refresh_from_luno)
-    return float(acc.paper_balance if acc.account_type == "dry_run" else acc.balance)
+    if refresh and acc.account_type == "live":
+        await _to_thread(acc.refresh_from_luno)
+    return float(acc.balance)
 
 
 @mcp.tool()
@@ -58,16 +54,12 @@ async def get_holdings(name: str, refresh: bool = False) -> dict[str, float]:
 
     Args:
         name: Account holder name
-        refresh: If true, refresh from Luno (live) or seed paper wallet if empty (dry_run)
+        refresh: If true, refresh counter balance from Luno (live only)
     """
     acc = Account.get(name)
-    if refresh:
-        if acc.account_type == "dry_run":
-            if acc.paper_balance <= 0 and not acc.paper_holdings:
-                await _to_thread(acc.paper_reset_from_luno)
-        else:
-            await _to_thread(acc.refresh_from_luno)
-    return acc.paper_holdings if acc.account_type == "dry_run" else acc.holdings
+    if refresh and acc.account_type == "live":
+        await _to_thread(acc.refresh_from_luno)
+    return acc.holdings
 
 
 @mcp.tool()
@@ -75,20 +67,17 @@ async def refresh_account(name: str) -> str:
     """Refresh balance + holdings from Luno (source of truth).
 
     Dry run behavior:
-    - If paper wallet is empty, seed it from Luno.
-    - If paper wallet already has values, leave it unchanged.
+    - Portfolio holdings are kept in DB and not auto-synced.
 
     Args:
         name: Account holder name
     """
     acc = Account.get(name)
     try:
-        if acc.account_type == "dry_run":
-            if acc.paper_balance <= 0 and not acc.paper_holdings:
-                return await _to_thread(acc.paper_reset_from_luno)
-            return "OK: Paper wallet unchanged"
-        await _to_thread(acc.refresh_from_luno)
-        return "OK: Account refreshed"
+        if acc.account_type == "live":
+            await _to_thread(acc.refresh_from_luno)
+            return "OK: Account refreshed"
+        return "OK: Portfolio unchanged"
     except Exception as e:
         return _err("refresh_account", e)
 
@@ -113,16 +102,12 @@ async def get_portfolio_value(name: str, refresh: bool = True) -> float:
 
     Args:
         name: Account holder name
-        refresh: If true, refresh from Luno first (live) or seed paper wallet if empty (dry_run)
+        refresh: If true, refresh counter balance from Luno (live only)
     """
     acc = Account.get(name)
     try:
-        if refresh:
-            if acc.account_type == "dry_run":
-                if acc.paper_balance <= 0 and not acc.paper_holdings:
-                    await _to_thread(acc.paper_reset_from_luno)
-            else:
-                await _to_thread(acc.refresh_from_luno)
+        if refresh and acc.account_type == "live":
+            await _to_thread(acc.refresh_from_luno)
         return await _to_thread(acc.compute_portfolio_value)
     except Exception as e:
         # for MCP, raise-less is better; return NaN-ish sentinel
@@ -136,16 +121,12 @@ async def snapshot_portfolio_value(name: str, refresh: bool = True) -> str:
 
     Args:
         name: Account holder name
-        refresh: If true, refresh from Luno first (live) or seed paper wallet if empty (dry_run)
+        refresh: If true, refresh counter balance from Luno (live only)
     """
     acc = Account.get(name)
     try:
-        if refresh:
-            if acc.account_type == "dry_run":
-                if acc.paper_balance <= 0 and not acc.paper_holdings:
-                    await _to_thread(acc.paper_reset_from_luno)
-            else:
-                await _to_thread(acc.refresh_from_luno)
+        if refresh and acc.account_type == "live":
+            await _to_thread(acc.refresh_from_luno)
         value = await _to_thread(acc.snapshot_portfolio_value)
         return f"OK: Snapshot saved. portfolio_value=RM {value:.2f}"
     except Exception as e:

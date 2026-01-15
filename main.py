@@ -13,9 +13,15 @@ from logging.handlers import RotatingFileHandler
 from typing import List
 
 from app import load_env
-from app.libs.account import Account, assign_myr_accounts_to_traders
+from app.libs.account import (
+    Account,
+    assign_myr_accounts_to_traders,
+    assign_portfolio_holdings_to_traders,
+    parse_portfolio_holdings_arg,
+)
 from app.libs.admin import distribute_myr_balances, parse_myr_balances_arg
 from app.libs.tracers import LogTracer
+from app.libs.database import list_account_names, read_account
 from app.libs.traders import Trader
 from agents import add_trace_processor
 
@@ -26,6 +32,18 @@ from agents import add_trace_processor
 JITTER_SECONDS = 3  # per-trader random jitter
 TRADER_TIMEOUT_SECONDS = 90  # hard timeout per trader run
 HEARTBEAT_DETAILS = False  # verbose per-trader heartbeat
+DEFAULT_NAMES = [
+    "Warren",
+    "George",
+    # "Ray",
+    # "Cathie"
+]
+DEFAULT_LASTNAMES = [
+    "Patience",
+    "Bold",
+    # "Systematic",
+    # "Crypto"
+]
 
 
 def utc_now() -> str:
@@ -164,7 +182,34 @@ def parse_args() -> argparse.Namespace:
             "Requires LUNO_ADMIN_KEY/LUNO_ADMIN_SECRET."
         ),
     )
+    p.add_argument(
+        "--holdings",
+        default=None,
+        help=(
+            "Per-trader portfolio holdings aligned with --names. "
+            "Use ';' between traders and ',' between assets: "
+            "XBT:0.1,ETH:2;XBT:0.05. "
+            "Single group applies to all traders."
+        ),
+    )
+    p.add_argument(
+        "--show-portfolio",
+        action="store_true",
+        help="Show trader names with portfolio balance/holdings and exit.",
+    )
     return p.parse_args()
+
+
+def resolve_names(args: argparse.Namespace) -> List[str]:
+    if args.names:
+        return [x.strip() for x in args.names.split(",") if x.strip()]
+    return list(DEFAULT_NAMES)
+
+
+def resolve_portfolio_names(args: argparse.Namespace) -> List[str]:
+    if args.names:
+        return [x.strip() for x in args.names.split(",") if x.strip()]
+    return list_account_names()
 
 
 def resolve_config(args: argparse.Namespace) -> dict:
@@ -190,25 +235,12 @@ def resolve_config(args: argparse.Namespace) -> dict:
     if timeout_seconds <= 0:
         timeout_seconds = TRADER_TIMEOUT_SECONDS
 
-    default_names = [
-        "Warren",
-        "George",
-        # "Ray",
-        # "Cathie"
-    ]
-    default_lastnames = [
-        "Patience",
-        "Bold",
-        # "Systematic",
-        # "Crypto"
-    ]
-
     if args.names:
         names = [x.strip() for x in args.names.split(",") if x.strip()]
         lastnames = ["Trader"] * len(names)
     else:
-        names = default_names
-        lastnames = default_lastnames
+        names = list(DEFAULT_NAMES)
+        lastnames = list(DEFAULT_LASTNAMES)
     run_every_list = align_list(run_every_list, len(names))
 
     cli_models = []
@@ -270,6 +302,20 @@ def apply_myr_accounts(names: List[str]) -> None:
         log.info("Assigned MYR accounts: %s", mapping)
 
 
+def apply_portfolio_holdings(names: List[str], raw: str | None) -> None:
+    if raw is None:
+        return
+    holdings_by_trader = parse_portfolio_holdings_arg(raw, len(names))
+    if not holdings_by_trader:
+        return
+    summary = assign_portfolio_holdings_to_traders(names, holdings_by_trader)
+    if summary.get("assignments"):
+        mapping = ", ".join(
+            f"{a['trader']}({len(a['assets'])} assets)" for a in summary["assignments"]
+        )
+        log.info("Assigned portfolio holdings: %s", mapping)
+
+
 def run_admin_myr_balances(raw: str, log_level: str | None) -> None:
     setup_logging(log_level)
     balances = parse_myr_balances_arg(raw)
@@ -298,6 +344,27 @@ def run_admin_myr_balances(raw: str, log_level: str | None) -> None:
         summary["remaining_balance"],
         summary["myr0_account_id"],
     )
+
+
+def show_portfolios(names: List[str]) -> None:
+    if not names:
+        print("No accounts found in DB.")
+        return
+    print("Trader portfolios:")
+    for name in names:
+        data = read_account(name)
+        if not data:
+            print(f"- {name}: (not found in DB)")
+            continue
+        balance = float(data.get("balance") or 0.0)
+        holdings = data.get("holdings") or {}
+        if holdings:
+            holdings_text = ", ".join(
+                f"{asset}:{qty}" for asset, qty in sorted(holdings.items())
+            )
+        else:
+            holdings_text = "(empty)"
+        print(f"- {name}: MYR={balance:.2f} | holdings={holdings_text}")
 
 
 # -------------------------
@@ -423,6 +490,10 @@ def main() -> None:
             log.exception(f"Admin MYR balance distribution failed: {e}")
             raise
         return
+    if args.show_portfolio:
+        names = resolve_portfolio_names(args)
+        show_portfolios(names)
+        return
     cfg = resolve_config(args)
 
     global TRADER_TIMEOUT_SECONDS
@@ -430,6 +501,7 @@ def main() -> None:
 
     setup_logging(cfg["log_level"])
     apply_myr_accounts(cfg["names"])
+    apply_portfolio_holdings(cfg["names"], args.holdings)
     apply_account_type(cfg["names"], cfg["account_type"])
 
     try:

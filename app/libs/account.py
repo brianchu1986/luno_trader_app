@@ -4,22 +4,19 @@
 Account & Trading Engine (Luno MYR Markets)
 
 This module defines the Account model and all trading-related logic
-for both LIVE trading and TRUE PAPER TRADING.
+for live trading and portfolio simulation.
 
 Key concepts:
 - Counter currency is fixed (MYR by default).
 - All markets traded must end with the counter currency (e.g. GRTMYR).
-- LIVE mode sends real orders to Luno.
-- DRY_RUN mode performs TRUE paper trading:
-    - Maintains paper_balance and paper_holdings
-    - Uses real market prices (ask/bid)
-    - Never sends orders to Luno
+- account_type="live" sends real orders to Luno.
+- account_type="dry_run" sends no orders.
+- Portfolio (balance/holdings) is stored per trader in DB.
 
 Design goals:
 - Safe for AI agents (no hard crashes on expected conditions)
 - Deterministic, structured outputs via TradeResult (Pydantic)
-- Luno balances are treated as the source of truth for LIVE mode
-- Paper wallet is isolated and reproducible for simulations
+- Portfolio is isolated per trader for simulations and allocation
 
 Typical agent flow:
 1) account.refresh_from_luno()        # sync live balances
@@ -207,6 +204,7 @@ def assign_myr_accounts_to_traders(names: list[str]) -> dict[str, Any]:
         acc = Account.get(trader_name)
         acc.account_id = account_id
         acc.balance = float(balance)
+        acc.paper_balance = float(balance)
         acc.save()
 
         assignments.append(
@@ -223,6 +221,77 @@ def assign_myr_accounts_to_traders(names: list[str]) -> dict[str, Any]:
         "assignments": assignments,
         "used_admin": used_admin,
     }
+
+
+def _parse_holdings_block(raw: str) -> dict[str, float]:
+    holdings: dict[str, float] = {}
+    text = str(raw or "").strip()
+    if not text:
+        return holdings
+    for item in text.split(","):
+        item = item.strip()
+        if not item:
+            continue
+        if ":" not in item:
+            raise ValueError(f"Invalid holding entry '{item}'. Use ASSET:QTY.")
+        asset, qty_str = item.split(":", 1)
+        asset = asset.strip().upper()
+        if not asset:
+            raise ValueError(f"Invalid holding entry '{item}'. Missing asset.")
+        try:
+            qty = float(qty_str)
+        except ValueError as exc:
+            raise ValueError(f"Invalid holding quantity '{qty_str}'.") from exc
+        if qty < 0:
+            raise ValueError(f"Negative holding not allowed: {asset}={qty}")
+        if qty == 0:
+            continue
+        holdings[asset] = float(holdings.get(asset, 0.0)) + float(qty)
+    return holdings
+
+
+def parse_portfolio_holdings_arg(
+    raw: str | None, trader_count: int
+) -> list[dict[str, float]]:
+    if raw is None or trader_count <= 0:
+        return []
+    text = str(raw).strip()
+    if not text:
+        return [{} for _ in range(trader_count)]
+    blocks = [b.strip() for b in text.split(";")]
+    if len(blocks) == 1 and trader_count > 1:
+        blocks = blocks * trader_count
+    elif len(blocks) < trader_count:
+        blocks = blocks + [blocks[-1]] * (trader_count - len(blocks))
+    elif len(blocks) > trader_count:
+        raise ValueError(
+            f"Too many holdings groups: {len(blocks)} (traders={trader_count})"
+        )
+    return [_parse_holdings_block(block) for block in blocks]
+
+
+def assign_portfolio_holdings_to_traders(
+    names: list[str], holdings_by_trader: list[dict[str, float]]
+) -> dict[str, Any]:
+    if not names or not holdings_by_trader:
+        return {"assignments": []}
+    if len(names) != len(holdings_by_trader):
+        raise ValueError("Holdings list must match trader list length.")
+
+    assignments: list[dict[str, Any]] = []
+    for name, holdings in zip(names, holdings_by_trader):
+        acc = Account.get(name)
+        acc.holdings = dict(holdings)
+        acc.paper_holdings = dict(holdings)
+        acc.paper_balance = float(acc.balance)
+        acc.save()
+        assignments.append(
+            {
+                "trader": name,
+                "assets": sorted(holdings.keys()),
+            }
+        )
+    return {"assignments": assignments}
 
 
 class Transaction(BaseModel):
@@ -271,15 +340,14 @@ class Account(BaseModel):
     Represents a trading account that can operate in either LIVE or DRY_RUN mode.
 
     LIVE mode:
-    - Reads balances from Luno
     - Sends real MARKET orders via Luno API
-    - balance / holdings reflect available (balance - reserved)
 
-    DRY_RUN mode (true paper trading):
-    - Uses paper_balance and paper_holdings
-    - Simulates trades using real-time prices
-    - Never sends orders to Luno
-    - Safe for strategy testing and AI experimentation
+    DRY_RUN mode:
+    - No orders sent to Luno
+
+    Portfolio:
+    - balance / holdings are stored per trader in the DB
+    - trades update the portfolio in the DB
 
     Fields:
         name:
@@ -289,16 +357,16 @@ class Account(BaseModel):
             Counter currency account_id from Luno (e.g. MYR account).
 
         balance:
-            LIVE available counter currency (balance - reserved).
+            Portfolio counter currency balance stored in DB.
 
         holdings:
-            LIVE available asset balances (balance - reserved).
+            Portfolio asset holdings stored in DB.
 
         paper_balance:
-            Simulated counter currency balance for DRY_RUN mode.
+            Legacy mirror of portfolio balance.
 
         paper_holdings:
-            Simulated asset holdings for DRY_RUN mode.
+            Legacy mirror of portfolio holdings.
 
         account_type:
             Execution mode: "dry_run" or "live".
@@ -320,7 +388,7 @@ class Account(BaseModel):
     portfolio_value_time_series: list[tuple[str, float]]
     account_type: str  # "dry_run" or "live"
 
-    # ✅ PAPER WALLET (true paper trading)
+    # Portfolio mirror (legacy)
     paper_balance: float
     paper_holdings: dict[str, float]
 
@@ -391,10 +459,9 @@ class Account(BaseModel):
 
     # ---------- reporting ----------
     def report(self) -> str:
-        use_paper = self.account_type == "dry_run"
-        balance = self.paper_balance if use_paper else self.balance
-        holdings = self.paper_holdings if use_paper else self.holdings
-        wallet_label = "paper" if use_paper else "live"
+        balance = self.balance
+        holdings = self.holdings
+        wallet_label = "portfolio"
 
         holdings_lines = [f"- {a}: {q}" for a, q in sorted(holdings.items())]
         holdings_text = "\n".join(holdings_lines) if holdings_lines else "- (empty)"
@@ -412,22 +479,16 @@ class Account(BaseModel):
 
     # ---------------- Wallet selectors ----------------
     def _wallet_balance(self) -> float:
-        return self.paper_balance if self.account_type == "dry_run" else self.balance
+        return self.balance
 
     def _wallet_holdings(self) -> dict[str, float]:
-        return self.paper_holdings if self.account_type == "dry_run" else self.holdings
+        return self.holdings
 
     def _set_wallet_balance(self, v: float) -> None:
-        if self.account_type == "dry_run":
-            self.paper_balance = v
-        else:
-            self.balance = v
+        self.balance = v
 
     def _set_wallet_holdings(self, h: dict[str, float]) -> None:
-        if self.account_type == "dry_run":
-            self.paper_holdings = h
-        else:
-            self.holdings = h
+        self.holdings = h
 
     def _counter_account_id(self) -> str | None:
         account_id = str(self.account_id or "").strip()
@@ -474,13 +535,13 @@ class Account(BaseModel):
         return float(q)
 
     # ---------------- Sync live wallet from Luno (source of truth) ----------------
-    def refresh_from_luno(self) -> None:
+    def refresh_from_luno(self, sync_holdings: bool = False) -> None:
         """
         Source of truth sync from Luno.
         Updates:
         - self.balance as counter available (balance - reserved)
         - self.account_id from counter row
-        - self.holdings for ALL non-counter assets as available (balance - reserved)
+        - self.holdings for ALL non-counter assets when sync_holdings is True
         """
         client = get_luno_client()
         res = client.get_balances()
@@ -510,17 +571,20 @@ class Account(BaseModel):
         self.balance = _parse_available(
             cc_row["balance"].iloc[0], cc_row["reserved"].iloc[0]
         )
+        self.paper_balance = float(self.balance)
 
-        new_holdings: dict[str, float] = {}
-        for _, r in df.iterrows():
-            asset = str(r.get("asset", "")).upper()
-            if not asset or asset == counter:
-                continue
-            avail = _parse_available(r.get("balance"), r.get("reserved"))
-            if avail > 0:
-                new_holdings[asset] = avail
+        if sync_holdings:
+            new_holdings: dict[str, float] = {}
+            for _, r in df.iterrows():
+                asset = str(r.get("asset", "")).upper()
+                if not asset or asset == counter:
+                    continue
+                avail = _parse_available(r.get("balance"), r.get("reserved"))
+                if avail > 0:
+                    new_holdings[asset] = avail
 
-        self.holdings = new_holdings
+            self.holdings = new_holdings
+            self.paper_holdings = dict(self.holdings)
         self.save()
 
     # ✅ Initialize/reset paper wallet based on current live balances
@@ -530,8 +594,9 @@ class Account(BaseModel):
 
         Behavior:
         - Reads LIVE balances from Luno (read-only).
-        - Copies available MYR → paper_balance.
-        - Copies available assets → paper_holdings.
+        - Copies available MYR into portfolio balance.
+        - Copies available assets into portfolio holdings.
+        - Mirrors portfolio into paper_balance/paper_holdings.
         - Does NOT send any orders.
 
         When to use:
@@ -542,34 +607,42 @@ class Account(BaseModel):
         - No trading side effects.
         """
 
-        self.refresh_from_luno()
+        self.refresh_from_luno(sync_holdings=True)
         self.paper_balance = float(self.balance)
         self.paper_holdings = dict(self.holdings)
         self.save()
         write_log(self.name, "paper", "Paper wallet reset from Luno balances")
         return "Paper wallet reset from Luno balances"
 
-    # ---------------- Paper trade apply ----------------
-    def _apply_paper_buy(self, base_asset: str, qty: float, cost: float) -> None:
-        pb = float(self.paper_balance)
-        if cost > pb:
-            raise ValueError("paper insufficient balance")
-        self.paper_balance = pb - cost
-        ph = dict(self.paper_holdings)
-        ph[base_asset] = float(ph.get(base_asset, 0.0)) + qty
+    # ---------------- Portfolio apply ----------------
+    def _apply_portfolio_buy(
+        self, base_asset: str, qty: float, cost: float
+    ) -> None:
+        balance = float(self.balance)
+        if cost > balance:
+            raise ValueError("insufficient balance")
+        self.balance = balance - cost
+        holdings = dict(self.holdings)
+        holdings[base_asset] = float(holdings.get(base_asset, 0.0)) + qty
         # keep tiny dust? optional, keep it
-        self.paper_holdings = ph
+        self.holdings = holdings
+        self.paper_balance = float(self.balance)
+        self.paper_holdings = dict(self.holdings)
 
-    def _apply_paper_sell(self, base_asset: str, qty: float, proceeds: float) -> None:
-        ph = dict(self.paper_holdings)
-        have = float(ph.get(base_asset, 0.0))
+    def _apply_portfolio_sell(
+        self, base_asset: str, qty: float, proceeds: float
+    ) -> None:
+        holdings = dict(self.holdings)
+        have = float(holdings.get(base_asset, 0.0))
         if qty > have:
-            raise ValueError("paper insufficient asset")
-        ph[base_asset] = have - qty
-        if ph[base_asset] <= 0:
-            ph.pop(base_asset, None)
-        self.paper_holdings = ph
-        self.paper_balance = float(self.paper_balance) + proceeds
+            raise ValueError("insufficient asset")
+        holdings[base_asset] = have - qty
+        if holdings[base_asset] <= 0:
+            holdings.pop(base_asset, None)
+        self.holdings = holdings
+        self.balance = float(self.balance) + proceeds
+        self.paper_balance = float(self.balance)
+        self.paper_holdings = dict(self.holdings)
 
     # ---------------- Estimation (agent sizing) ----------------
     def get_estimate_qty(self, market_id: str, spend_myr: float) -> TradeResult:
@@ -585,9 +658,7 @@ class Account(BaseModel):
 
         How estimation works:
         - Uses current ASK price (BUY hits ask).
-        - Uses available wallet:
-            - paper_balance in DRY_RUN
-            - live balance in LIVE mode
+        - Uses portfolio balance stored in DB.
         - Applies market rules:
             - min_volume
             - volume_scale (rounded DOWN)
@@ -633,7 +704,7 @@ class Account(BaseModel):
                 last_trade=last_trade,
             )
 
-        # ✅ in dry_run, use paper_balance; in live, use real available balance
+        # portfolio balance stored in DB
         available_ccy = self._wallet_balance()
         if spend_myr > available_ccy:
             return TradeResult(
@@ -646,7 +717,7 @@ class Account(BaseModel):
                 ask=ask,
                 bid=bid,
                 last_trade=last_trade,
-                suggestion="Reduce spend_myr or reset paper wallet",
+                suggestion="Reduce spend_myr or adjust portfolio balance",
             )
 
         raw_qty = spend_myr / ask
@@ -696,11 +767,9 @@ class Account(BaseModel):
         - Optional spread guard to avoid illiquid fills.
 
         Execution:
-        - LIVE:
-            Sends MARKET BUY with counter_volume to Luno.
-        - DRY_RUN:
-            Deducts paper_balance.
-            Increases paper_holdings.
+        - LIVE: Sends MARKET BUY with counter_volume to Luno.
+        - DRY_RUN: No order sent.
+        - Portfolio: balance/holdings updated in DB.
 
         Returns:
             TradeResult:
@@ -794,9 +863,10 @@ class Account(BaseModel):
                 counter_volume=est_cost,
                 counter_account_id=self._counter_account_id(),
             )
+            self._apply_portfolio_buy(base_asset, quantity, est_cost)
         else:
-            # ✅ PAPER EXECUTION
-            self._apply_paper_buy(base_asset, quantity, est_cost)
+            # portfolio update
+            self._apply_portfolio_buy(base_asset, quantity, est_cost)
 
         self.transactions.append(
             Transaction(
@@ -847,11 +917,9 @@ class Account(BaseModel):
         - Optional spread guard.
 
         Execution:
-        - LIVE:
-            Sends MARKET SELL with base_volume to Luno.
-        - DRY_RUN:
-            Reduces paper_holdings.
-            Increases paper_balance.
+        - LIVE: Sends MARKET SELL with base_volume to Luno.
+        - DRY_RUN: No order sent.
+        - Portfolio: balance/holdings updated in DB.
 
         Returns:
             TradeResult:
@@ -942,9 +1010,10 @@ class Account(BaseModel):
                 base_volume=quantity,
                 counter_account_id=self._counter_account_id(),
             )
+            self._apply_portfolio_sell(base_asset, quantity, est_proceeds)
         else:
-            # ✅ PAPER EXECUTION
-            self._apply_paper_sell(base_asset, quantity, est_proceeds)
+            # portfolio update
+            self._apply_portfolio_sell(base_asset, quantity, est_proceeds)
 
         self.transactions.append(
             Transaction(
@@ -984,10 +1053,8 @@ class Account(BaseModel):
         Compute total portfolio value in MYR.
 
         Valuation rules:
-        - Counter currency (MYR) uses available balance.
+        - Counter currency (MYR) uses portfolio balance from DB.
         - Crypto assets are valued using BID price (realistic liquidation value).
-        - LIVE mode uses real Luno balances.
-        - DRY_RUN mode uses paper balances.
 
         Returns:
             Total portfolio value in MYR as float.
@@ -997,15 +1064,8 @@ class Account(BaseModel):
 
         total = Decimal("0")
 
-        # Choose wallet source
-        if self.account_type == "dry_run":
-            total += Decimal(str(self.paper_balance))
-            holdings = self.paper_holdings
-        else:
-            # Ensure live balances are up-to-date
-            self.refresh_from_luno()
-            total += Decimal(str(self.balance))
-            holdings = self.holdings
+        total += Decimal(str(self.balance))
+        holdings = self.holdings
 
         for asset, qty in holdings.items():
             if qty <= 0:
