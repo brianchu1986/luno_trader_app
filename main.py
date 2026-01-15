@@ -25,6 +25,7 @@ from app.libs.tracers import LogTracer
 from app.libs.database import list_account_names, read_account
 from app.libs.client import Client
 from app.libs.traders import Trader
+from app.libs.strategy import STRATEGY_REGISTRY
 from agents import add_trace_processor
 
 
@@ -127,6 +128,36 @@ def align_list(values: List[int], target_len: int) -> List[int]:
     return values[:target_len]
 
 
+def parse_strategies_arg(raw: str | None, trader_count: int) -> List[str]:
+    if raw is None or trader_count <= 0:
+        return []
+    text = str(raw).strip()
+    if not text:
+        return []
+    parts = [p.strip() for p in text.split(",")]
+    if len(parts) == 1 and trader_count > 1:
+        parts = parts * trader_count
+    elif len(parts) < trader_count:
+        parts = parts + [parts[-1]] * (trader_count - len(parts))
+    elif len(parts) > trader_count:
+        raise ValueError(
+            f"Too many strategies: {len(parts)} (traders={trader_count})"
+        )
+    return parts
+
+
+def resolve_strategy_entry(entry: str) -> str | None:
+    text = str(entry or "").strip()
+    if not text:
+        return None
+    key = text.lower()
+    if key in {"none", "clear", "reset"}:
+        return ""
+    if key in STRATEGY_REGISTRY:
+        return STRATEGY_REGISTRY[key]
+    return text
+
+
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Luno Trader Bot Scheduler")
 
@@ -158,6 +189,14 @@ def parse_args() -> argparse.Namespace:
         "--names",
         default=None,
         help="Comma-separated trader names override (e.g. Warren,George)",
+    )
+    p.add_argument(
+        "--strategies",
+        default=None,
+        help=(
+            "Comma-separated strategy keys or text aligned with --names "
+            "(e.g. warren,george). Use 'none' to clear."
+        ),
     )
     p.add_argument(
         "--log-level",
@@ -333,6 +372,42 @@ def apply_portfolio_holdings(names: List[str], raw: str | None) -> None:
         log.info("Assigned portfolio holdings: %s", mapping)
 
 
+def apply_strategies(names: List[str], raw: str | None) -> None:
+    if not names or raw is None:
+        return
+    entries = parse_strategies_arg(raw, len(names))
+    if not entries:
+        return
+    for name, entry in zip(names, entries):
+        resolved = resolve_strategy_entry(entry)
+        if resolved is None:
+            continue
+        try:
+            Account.get(name).change_strategy(resolved)
+            label = entry.strip() or "cleared"
+            log.info("Strategy set for %s (%s).", name, label)
+        except Exception as e:
+            log.warning("Failed to set strategy for %s: %s", name, e)
+
+
+def apply_default_strategies(names: List[str]) -> None:
+    if not names:
+        return
+    for name in names:
+        try:
+            acc = Account.get(name)
+            if str(acc.strategy or "").strip():
+                continue
+            key = name.strip().lower()
+            default = STRATEGY_REGISTRY.get(key)
+            if not default:
+                continue
+            acc.change_strategy(default)
+            log.info("Default strategy applied for %s (%s).", name, key)
+        except Exception as e:
+            log.warning("Failed to apply default strategy for %s: %s", name, e)
+
+
 def run_admin_myr_balances(raw: str, log_level: str | None) -> None:
     setup_logging(log_level)
     balances = parse_myr_balances_arg(raw)
@@ -378,6 +453,7 @@ def show_portfolios(names: List[str], mode_filter: str | None) -> None:
             continue
         balance = float(data.get("balance") or 0.0)
         holdings = data.get("holdings") or {}
+        strategy = str(data.get("strategy") or "").strip()
         account_type = str(data.get("account_type") or "unknown")
         if mode_filter and account_type != mode_filter:
             continue
@@ -390,6 +466,11 @@ def show_portfolios(names: List[str], mode_filter: str | None) -> None:
         print(
             f"- {name} ({account_type}): MYR={balance:.2f} | holdings={holdings_text}"
         )
+        preview = _strategy_preview(strategy)
+        if preview:
+            print(f"  strategy: {preview}")
+        else:
+            print("  strategy: (empty)")
         total_value = _compute_portfolio_value(balance, holdings, client, counter)
         if total_value is None:
             print("  total=NA")
@@ -460,6 +541,20 @@ def _compute_portfolio_value(
     if holdings and priced_assets == 0:
         return None
     return float(total)
+
+
+def _strategy_preview(strategy: str, max_len: int = 120) -> str:
+    parts = [
+        line.strip() for line in str(strategy or "").splitlines() if line.strip()
+    ]
+    text = " ".join(parts)
+    if not text:
+        return ""
+    if max_len < 4:
+        return text[:max_len]
+    if len(text) <= max_len:
+        return text
+    return text[: max_len - 3].rstrip() + "..."
 
 
 # -------------------------
@@ -607,6 +702,8 @@ def main() -> None:
     setup_logging(cfg["log_level"])
     apply_myr_accounts(cfg["names"])
     apply_portfolio_holdings(cfg["names"], args.holdings)
+    apply_strategies(cfg["names"], args.strategies)
+    apply_default_strategies(cfg["names"])
     apply_account_type(cfg["names"], cfg["account_type"])
 
     try:

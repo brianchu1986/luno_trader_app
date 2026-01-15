@@ -42,6 +42,11 @@ Set per-trader holdings (order matches `--names`):
 python main.py --names Warren,George --holdings "XBT:0.1,ETH:2;XBT:0.05"
 ```
 
+Set per-trader strategies (registry keys or text):
+```bash
+python main.py --names Warren,George --strategies warren,george
+```
+
 Use one holdings group for all traders:
 ```bash
 python main.py --holdings "ETH:1.5"
@@ -60,6 +65,7 @@ python main.py --myr-balances 20,10,3.5
 - `--models`: Comma-separated model names aligned with `--names`.
 - `--once`: Run one cycle then exit.
 - `--names`: Comma-separated trader names (default: `Warren,George`).
+- `--strategies`: Comma-separated strategy keys or text aligned with `--names`.
 - `--log-level`: Override `LOG_LEVEL` (DEBUG/INFO/...).
 - `--timeout-seconds`: Per-trader timeout override.
 - `--live`: Use live trading mode (sends orders to Luno).
@@ -80,6 +86,11 @@ Example:
 ```
 XBT:0.1,ETH:2;XBT:0.05
 ```
+
+### Strategy defaults
+
+If a trader has no strategy set, the app applies a default based on name:
+`warren`, `george`, `ray`, `cathie` (from `app/libs/strategy.py`).
 
 ### Admin MYR balances
 
