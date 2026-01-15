@@ -76,14 +76,46 @@ def str_to_bool(s: str) -> bool:
     return str(s).strip().lower() in {"1", "true", "yes", "y", "on"}
 
 
+def parse_int_list(raw: str | int | None, default: int) -> List[int]:
+    if raw is None:
+        return [default]
+    if isinstance(raw, int):
+        return [raw if raw > 0 else default]
+    parts = [p.strip() for p in str(raw).split(",") if p.strip()]
+    if not parts:
+        return [default]
+    values = []
+    for p in parts:
+        try:
+            v = int(p)
+        except ValueError:
+            v = default
+        if v <= 0:
+            v = default
+        values.append(v)
+    return values
+
+
+def align_list(values: List[int], target_len: int) -> List[int]:
+    if target_len <= 0:
+        return []
+    if not values:
+        return []
+    if len(values) < target_len:
+        values = values + [values[-1]] * (target_len - len(values))
+    return values[:target_len]
+
+
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Luno Trader Bot Scheduler")
 
     p.add_argument(
         "--run-every",
-        type=int,
         default=None,
-        help="Run every N minutes (override env RUN_EVERY_N_MINUTES)",
+        help=(
+            "Run every N minutes (override env RUN_EVERY_N_MINUTES). "
+            "Use comma-separated values aligned with --names (e.g. 5,60)."
+        ),
     )
     p.add_argument(
         "--many-models",
@@ -127,7 +159,8 @@ def parse_args() -> argparse.Namespace:
 
 def resolve_config(args: argparse.Namespace) -> dict:
     # RUN_EVERY_MINUTES reads from env by default
-    run_every_env = int(os.getenv("RUN_EVERY_N_MINUTES", "10"))
+    run_every_env_raw = os.getenv("RUN_EVERY_N_MINUTES", "10")
+    run_every_env_list = parse_int_list(run_every_env_raw, default=10)
     use_many_env = str_to_bool(os.getenv("USE_MANY_MODELS", "false"))
     timeout_env_raw = os.getenv("TRADER_TIMEOUT_SECONDS", str(TRADER_TIMEOUT_SECONDS))
     try:
@@ -135,7 +168,11 @@ def resolve_config(args: argparse.Namespace) -> dict:
     except ValueError:
         timeout_env = TRADER_TIMEOUT_SECONDS
 
-    run_every = args.run_every or run_every_env
+    run_every_list = (
+        parse_int_list(args.run_every, default=run_every_env_list[0])
+        if args.run_every
+        else run_every_env_list
+    )
     use_many_models = bool(args.many_models) or use_many_env
     model_default = args.model_default or os.getenv("MODEL_DEFAULT", "gpt-5-mini")
     account_type = "live" if args.live else "dry_run"
@@ -162,6 +199,7 @@ def resolve_config(args: argparse.Namespace) -> dict:
     else:
         names = default_names
         lastnames = default_lastnames
+    run_every_list = align_list(run_every_list, len(names))
 
     cli_models = []
     if args.models:
@@ -184,7 +222,7 @@ def resolve_config(args: argparse.Namespace) -> dict:
         model_names = [model_default] * len(names)
 
     config = {
-        "run_every_minutes": int(run_every),
+        "run_every_minutes": run_every_list,
         "use_many_models": use_many_models,
         "names": names,
         "lastnames": lastnames,
@@ -238,6 +276,17 @@ async def run_trader_safe(trader: Trader) -> None:
         log.exception(f"❌ {trader.name} crashed: {e}")
 
 
+async def run_trader_loop(
+    trader: Trader, interval_minutes: int, stop_event: asyncio.Event
+) -> None:
+    while not stop_event.is_set():
+        await run_trader_safe(trader)
+        try:
+            await asyncio.wait_for(stop_event.wait(), timeout=interval_minutes * 60)
+        except asyncio.TimeoutError:
+            pass
+
+
 async def run_one_cycle(traders: List[Trader]) -> None:
     log.info(f"🫀 HEARTBEAT start | traders={len(traders)} | t={utc_now()}")
 
@@ -258,13 +307,24 @@ async def scheduler_loop(cfg: dict) -> None:
     add_trace_processor(LogTracer())
 
     traders = create_traders(cfg)
-    run_every = int(cfg["run_every_minutes"])
+    run_every_list = cfg["run_every_minutes"]
+    if isinstance(run_every_list, int):
+        run_every_list = [run_every_list] * len(traders)
+    run_every_list = align_list([int(x) for x in run_every_list], len(traders))
 
     log.info(
-        f"✅ Scheduler started | every={run_every}min | jitter≤{JITTER_SECONDS}s | timeout={TRADER_TIMEOUT_SECONDS}s"
+        f"Scheduler started | jitter<={JITTER_SECONDS}s | timeout={TRADER_TIMEOUT_SECONDS}s"
     )
     log.info(f"Run mode: {cfg['account_type']}")
-    log.info(f"✅ Traders: {', '.join([t.name for t in traders])}")
+    log.info(f"Traders: {', '.join([t.name for t in traders])}")
+    if run_every_list:
+        if len(set(run_every_list)) == 1:
+            log.info(f"Interval: every={run_every_list[0]}min")
+        else:
+            schedule = ", ".join(
+                f"{t.name}={m}m" for t, m in zip(traders, run_every_list)
+            )
+            log.info(f"Intervals: {schedule}")
 
     stop_event = asyncio.Event()
 
@@ -278,18 +338,22 @@ async def scheduler_loop(cfg: dict) -> None:
         except NotImplementedError:
             signal.signal(sig, lambda *_: _stop())
 
-    while not stop_event.is_set():
+    if cfg["once"]:
         await run_one_cycle(traders)
+        log.info("Scheduler stopped.")
+        return
 
-        if cfg["once"]:
-            break
+    tasks = [
+        asyncio.create_task(run_trader_loop(t, m, stop_event))
+        for t, m in zip(traders, run_every_list)
+    ]
 
-        try:
-            await asyncio.wait_for(stop_event.wait(), timeout=run_every * 60)
-        except asyncio.TimeoutError:
-            pass
+    await stop_event.wait()
+    for task in tasks:
+        task.cancel()
+    await asyncio.gather(*tasks, return_exceptions=True)
+    log.info("Scheduler stopped.")
 
-    log.info("👋 Scheduler stopped.")
 
 
 def main() -> None:
