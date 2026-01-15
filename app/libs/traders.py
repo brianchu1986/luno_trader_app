@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import os
+import traceback
 from contextlib import AsyncExitStack
 from dotenv import load_dotenv
 from openai import AsyncOpenAI
@@ -11,7 +12,7 @@ from agents import Agent, Tool, Runner, OpenAIChatCompletionsModel, trace
 from agents.mcp import MCPServerStdio
 
 from app.libs.accounts_client import read_accounts_resource, read_strategy_resource
-from app.libs.tracers import make_trace_id  
+from app.libs.tracers import make_trace_id
 from app.libs.templates import (
     researcher_instructions,
     trader_instructions,
@@ -20,7 +21,10 @@ from app.libs.templates import (
     research_tool,
 )
 
-from mcp_params import trader_mcp_server_params, researcher_mcp_server_params
+from app.mcp_servers.mcp_params import (
+    trader_mcp_server_params,
+    researcher_mcp_server_params,
+)
 
 load_dotenv(override=True)
 
@@ -39,7 +43,9 @@ def get_model(model_name: str):
     - Else return the raw name (Agents SDK will use default OpenAI client).
     """
     if "deepseek" in (model_name or "").lower():
-        return OpenAIChatCompletionsModel(model=model_name, openai_client=deepseek_client)
+        return OpenAIChatCompletionsModel(
+            model=model_name, openai_client=deepseek_client
+        )
     return model_name
 
 
@@ -76,7 +82,9 @@ def _safe_account_text(account_payload: str) -> str:
 
 
 class Trader:
-    def __init__(self, name: str, lastname: str = "Trader", model_name: str = "gpt-5-mini"):
+    def __init__(
+        self, name: str, lastname: str = "Trader", model_name: str = "gpt-5-mini"
+    ):
         self.name = name
         self.lastname = lastname
         self.model_name = model_name
@@ -86,7 +94,9 @@ class Trader:
         self.do_trade = True
 
     async def create_agent(self, trader_mcp_servers, researcher_mcp_servers) -> Agent:
-        researcher_tool = await build_researcher_tool(researcher_mcp_servers, self.model_name)
+        researcher_tool = await build_researcher_tool(
+            researcher_mcp_servers, self.model_name
+        )
 
         self.agent = Agent(
             name=self.name,
@@ -107,7 +117,11 @@ class Trader:
         account = await self.get_account_report()
         strategy = await read_strategy_resource(self.name)
 
-        prompt = trade_message(self.name, strategy, account) if self.do_trade else rebalance_message(self.name, strategy, account)
+        prompt = (
+            trade_message(self.name, strategy, account)
+            if self.do_trade
+            else rebalance_message(self.name, strategy, account)
+        )
 
         await Runner.run(self.agent, prompt, max_turns=MAX_TURNS)
 
@@ -134,18 +148,30 @@ class Trader:
             await self.run_agent(trader_mcp_servers, researcher_mcp_servers)
 
     async def run_with_trace(self) -> None:
-        trace_name = f"{self.name}-trading" if self.do_trade else f"{self.name}-rebalancing"
+        trace_name = (
+            f"{self.name}-trading" if self.do_trade else f"{self.name}-rebalancing"
+        )
         trace_id = make_trace_id(self.name.lower())
 
         # If you have a LogTracer processor somewhere else, you can register it globally in your app bootstrap.
         with trace(trace_name, trace_id=trace_id):
             await self.run_with_mcp_servers()
 
-    async def run(self) -> None:
+    import traceback
+
+    async def run(self):
         try:
             await self.run_with_trace()
-        except Exception as e:
-            print(f"Error running trader {self.name}: {e}")
 
-        # flip mode each run
-        self.do_trade = not self.do_trade
+        except* Exception as eg:
+            print(
+                f"❌ Trader {self.name} failed with ExceptionGroup ({len(eg.exceptions)} errors):"
+            )
+
+            for i, e in enumerate(eg.exceptions, 1):
+                print(f"\n--- sub-exception #{i} ---")
+                traceback.print_exception(type(e), e, e.__traceback__)
+
+        finally:
+            # Toggle trade / rebalance
+            self.do_trade = not self.do_trade

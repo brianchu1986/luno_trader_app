@@ -53,5 +53,5 @@ async def refresh_markets() -> str:
 
 
 if __name__ == "__main__":
-    print("✅ market_server MCP started (stdio)")
+    # print("✅ market_server MCP started (stdio)")
     mcp.run(transport="stdio")

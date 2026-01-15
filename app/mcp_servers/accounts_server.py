@@ -219,5 +219,5 @@ async def read_strategy_resource(name: str) -> str:
 #   python -m app.mcp_servers.accounts_server
 #
 if __name__ == "__main__":
-    print("✅ accounts_server MCP started (stdio)")
+    # print("✅ accounts_server MCP started (stdio)")
     mcp.run(transport="stdio")

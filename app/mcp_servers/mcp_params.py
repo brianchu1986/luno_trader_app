@@ -41,37 +41,36 @@ trader_mcp_server_params = [
     },
 ]
 
+
 # -------------------------------------------------
 # Researcher MCP servers
 # -------------------------------------------------
 def researcher_mcp_server_params(name: str):
     params = [
-        # Simple fetch server
-        {
-            "command": "uvx",
-            "args": ["mcp-server-fetch"],
-        },
+        # # Simple fetch server
+        # {
+        #     "command": "uvx",
+        #     "args": ["mcp-server-fetch"],
+        # },
     ]
 
-    # Brave search (only if API key exists)
-    if brave_env:
-        params.append(
-            {
-                "command": "npx",
-                "args": ["-y", "@modelcontextprotocol/server-brave-search"],
-                "env": brave_env,
-            }
-        )
+    # # Brave search (only if API key exists)
+    # if brave_env:
+    #     params.append(
+    #         {
+    #             "command": "npx",
+    #             "args": ["-y", "@modelcontextprotocol/server-brave-search"],
+    #             "env": brave_env,
+    #         }
+    #     )
 
-    # Memory (per-trader persistent memory)
-    params.append(
-        {
-            "command": "npx",
-            "args": ["-y", "mcp-memory-libsql"],
-            "env": {
-                "LIBSQL_URL": f"file:{MEMORY_DIR / f'{name}.db'}"
-            },
-        }
-    )
+    # # Memory (per-trader persistent memory)
+    # params.append(
+    #     {
+    #         "command": "npx",
+    #         "args": ["-y", "mcp-memory-libsql"],
+    #         "env": {"LIBSQL_URL": f"file:{MEMORY_DIR / f'{name}.db'}"},
+    #     }
+    # )
 
     return params

@@ -13,7 +13,7 @@ from logging.handlers import RotatingFileHandler
 from typing import List
 
 from app import load_env
-from app.libs.tracer import LogTracer
+from app.libs.tracers import LogTracer
 from app.libs.traders import Trader
 from agents import add_trace_processor
 
@@ -21,9 +21,9 @@ from agents import add_trace_processor
 # =========================
 # Scheduler safety controls
 # =========================
-JITTER_SECONDS = 3           # per-trader random jitter
+JITTER_SECONDS = 3  # per-trader random jitter
 TRADER_TIMEOUT_SECONDS = 90  # hard timeout per trader run
-HEARTBEAT_DETAILS = False    # verbose per-trader heartbeat
+HEARTBEAT_DETAILS = False  # verbose per-trader heartbeat
 
 
 def utc_now() -> str:
@@ -42,7 +42,9 @@ def setup_logging(level: str | None = None) -> None:
 
     log_file = os.path.join(log_dir, "trader.log")
 
-    formatter = logging.Formatter("%(asctime)s | %(levelname)s | %(name)s | %(message)s")
+    formatter = logging.Formatter(
+        "%(asctime)s | %(levelname)s | %(name)s | %(message)s"
+    )
 
     root = logging.getLogger()
     root.setLevel(numeric_level)
@@ -109,8 +111,18 @@ def resolve_config(args: argparse.Namespace) -> dict:
     run_every = args.run_every or run_every_env
     use_many_models = bool(args.many_models) or use_many_env
 
-    default_names = ["Warren", "George", "Ray", "Cathie"]
-    default_lastnames = ["Patience", "Bold", "Systematic", "Crypto"]
+    default_names = [
+        "Warren",
+        # "George",
+        # "Ray",
+        # "Cathie"
+    ]
+    default_lastnames = [
+        "Patience",
+        # "Bold",
+        # "Systematic",
+        # "Crypto"
+    ]
 
     if args.names:
         names = [x.strip() for x in args.names.split(",") if x.strip()]
@@ -122,15 +134,15 @@ def resolve_config(args: argparse.Namespace) -> dict:
     if use_many_models:
         model_names = [
             os.getenv("MODEL_1", "gpt-5-mini"),
-            os.getenv("MODEL_2", "deepseek-chat"),
-            os.getenv("MODEL_3", os.getenv("MODEL_2", "deepseek-chat")),
-            os.getenv("MODEL_4", os.getenv("MODEL_2", "deepseek-chat")),
+            # os.getenv("MODEL_2", "deepseek-chat"),
         ]
         model_names = model_names[: len(names)]
         if len(model_names) < len(names):
             model_names += [model_names[-1]] * (len(names) - len(model_names))
     else:
         model_names = [os.getenv("MODEL_DEFAULT", "gpt-5-mini")] * len(names)
+
+    print("use_many_models : ", use_many_models)
 
     return {
         "run_every_minutes": int(run_every),
@@ -148,7 +160,9 @@ def resolve_config(args: argparse.Namespace) -> dict:
 # -------------------------
 def create_traders(cfg: dict) -> List[Trader]:
     traders: List[Trader] = []
-    for name, lastname, model_name in zip(cfg["names"], cfg["lastnames"], cfg["model_names"]):
+    for name, lastname, model_name in zip(
+        cfg["names"], cfg["lastnames"], cfg["model_names"]
+    ):
         traders.append(Trader(name=name, lastname=lastname, model_name=model_name))
     return traders
 
