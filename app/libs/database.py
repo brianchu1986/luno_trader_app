@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -11,6 +12,7 @@ from dotenv import load_dotenv
 
 load_dotenv(override=True)
 
+logger = logging.getLogger(__name__)
 
 BASE_DIR = Path(__file__).resolve().parents[1]  # app/
 DATA_DIR = BASE_DIR / "data"
@@ -82,8 +84,7 @@ _init_db()
 # ---- Public API (compatible with your current functions) ----
 def write_account(name: str, account_dict: Dict[str, Any]) -> None:
     json_data = _json_dumps(account_dict)
-    print("write_account : ")
-    print(json_data)
+    logger.debug("write_account: %s", json_data)
     with _connect() as conn:
         conn.execute("""
             INSERT INTO accounts (name, account)
