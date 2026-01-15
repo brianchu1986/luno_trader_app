@@ -27,6 +27,15 @@ Show current trader portfolios:
 python main.py --show-portfolio
 ```
 If you omit `--names`, it prints every account stored in the DB.
+Filter by mode:
+```bash
+python main.py --show-portfolio --live-only
+python main.py --show-portfolio --dry-run-only
+```
+Show balances from Luno (all accounts):
+```bash
+python main.py --show-luno-balances
+```
 
 Set per-trader holdings (order matches `--names`):
 ```bash
@@ -57,6 +66,9 @@ python main.py --myr-balances 20,10,3.5
 - `--myr-balances`: Admin reset + distribute MYR balances to `MYR_1..MYR_9`.
 - `--holdings`: Per-trader portfolio holdings.
 - `--show-portfolio`: Print trader balances/holdings from DB and exit.
+- `--show-luno-balances`: Print balances from `client.get_balances()` and exit.
+- `--live-only`: Filter `--show-portfolio` to live accounts.
+- `--dry-run-only`: Filter `--show-portfolio` to dry_run accounts.
 
 ### Holdings format
 

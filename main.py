@@ -11,8 +11,9 @@ import time
 from datetime import datetime, timezone
 from logging.handlers import RotatingFileHandler
 from typing import List
+from decimal import Decimal, InvalidOperation
 
-from app import load_env
+from app import load_env, get_counter_currency, get_luno_client
 from app.libs.account import (
     Account,
     assign_myr_accounts_to_traders,
@@ -22,6 +23,7 @@ from app.libs.account import (
 from app.libs.admin import distribute_myr_balances, parse_myr_balances_arg
 from app.libs.tracers import LogTracer
 from app.libs.database import list_account_names, read_account
+from app.libs.client import Client
 from app.libs.traders import Trader
 from agents import add_trace_processor
 
@@ -197,6 +199,21 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Show trader names with portfolio balance/holdings and exit.",
     )
+    p.add_argument(
+        "--show-luno-balances",
+        action="store_true",
+        help="Show balances from Luno client.get_balances() and exit.",
+    )
+    p.add_argument(
+        "--live-only",
+        action="store_true",
+        help="Filter --show-portfolio output to live accounts only.",
+    )
+    p.add_argument(
+        "--dry-run-only",
+        action="store_true",
+        help="Filter --show-portfolio output to dry_run accounts only.",
+    )
     return p.parse_args()
 
 
@@ -346,11 +363,14 @@ def run_admin_myr_balances(raw: str, log_level: str | None) -> None:
     )
 
 
-def show_portfolios(names: List[str]) -> None:
+def show_portfolios(names: List[str], mode_filter: str | None) -> None:
     if not names:
         print("No accounts found in DB.")
         return
     print("Trader portfolios:")
+    client = Client()
+    counter = get_counter_currency().upper()
+    printed = 0
     for name in names:
         data = read_account(name)
         if not data:
@@ -358,13 +378,88 @@ def show_portfolios(names: List[str]) -> None:
             continue
         balance = float(data.get("balance") or 0.0)
         holdings = data.get("holdings") or {}
+        account_type = str(data.get("account_type") or "unknown")
+        if mode_filter and account_type != mode_filter:
+            continue
         if holdings:
             holdings_text = ", ".join(
                 f"{asset}:{qty}" for asset, qty in sorted(holdings.items())
             )
         else:
             holdings_text = "(empty)"
-        print(f"- {name}: MYR={balance:.2f} | holdings={holdings_text}")
+        print(
+            f"- {name} ({account_type}): MYR={balance:.2f} | holdings={holdings_text}"
+        )
+        total_value = _compute_portfolio_value(balance, holdings, client, counter)
+        if total_value is None:
+            print("  total=NA")
+        else:
+            print(f"  total=RM {total_value:.2f}")
+        printed += 1
+    if mode_filter and printed == 0:
+        print(f"(no accounts with account_type={mode_filter})")
+
+
+def show_luno_balances() -> None:
+    client = get_luno_client()
+    res = client.get_balances()
+    rows = res.get("balance", [])
+    if not isinstance(rows, list) or not rows:
+        print("No balances returned from Luno.")
+        return
+    print("Luno balances:")
+    for row in rows:
+        asset = str(row.get("asset", "")).upper()
+        name = str(row.get("name", "")).strip()
+        account_id = str(row.get("account_id", "")).strip()
+        balance_raw = row.get("balance") or "0"
+        reserved_raw = row.get("reserved") or "0"
+        try:
+            balance = Decimal(str(balance_raw))
+        except InvalidOperation:
+            balance = Decimal("0")
+        try:
+            reserved = Decimal(str(reserved_raw))
+        except InvalidOperation:
+            reserved = Decimal("0")
+        available = balance - reserved
+        if available < 0:
+            available = Decimal("0")
+        label = asset or "UNKNOWN"
+        if name:
+            label += f" ({name})"
+        print(
+            f"- {label}: id={account_id} balance={balance} reserved={reserved} available={available}"
+        )
+
+
+def _compute_portfolio_value(
+    balance: float,
+    holdings: dict[str, float],
+    client: Client,
+    counter: str,
+) -> float | None:
+    try:
+        total = Decimal(str(balance))
+    except (InvalidOperation, ValueError):
+        total = Decimal("0")
+
+    priced_assets = 0
+    for asset, qty in holdings.items():
+        if qty <= 0:
+            continue
+        market_id = f"{asset}{counter}"
+        try:
+            ticker = client.get_ticker(pair=market_id)
+            bid = Decimal(str(ticker["bid"]))
+        except Exception:
+            continue
+        total += Decimal(str(qty)) * bid
+        priced_assets += 1
+
+    if holdings and priced_assets == 0:
+        return None
+    return float(total)
 
 
 # -------------------------
@@ -490,9 +585,19 @@ def main() -> None:
             log.exception(f"Admin MYR balance distribution failed: {e}")
             raise
         return
+    if args.show_luno_balances:
+        show_luno_balances()
+        return
     if args.show_portfolio:
+        if args.live_only and args.dry_run_only:
+            raise ValueError("Use only one of --live-only or --dry-run-only.")
+        mode_filter = None
+        if args.live_only:
+            mode_filter = "live"
+        elif args.dry_run_only:
+            mode_filter = "dry_run"
         names = resolve_portfolio_names(args)
-        show_portfolios(names)
+        show_portfolios(names, mode_filter)
         return
     cfg = resolve_config(args)
 
