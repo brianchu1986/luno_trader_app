@@ -34,7 +34,7 @@ from pydantic import BaseModel
 from dotenv import load_dotenv
 
 from app.libs.database import write_account, read_account, write_log
-from app import get_luno_client, get_counter_currency
+from app import get_luno_admin_client, get_luno_client, get_counter_currency
 
 from datetime import datetime, timezone
 from decimal import Decimal, ROUND_DOWN
@@ -44,6 +44,8 @@ import pandas as pd
 
 load_dotenv(override=True)
 INITIAL_BALANCE = 0.00
+MAX_MYR_TRADERS = 9
+MYR_ACCOUNT_PREFIX = "MYR_"
 
 
 def _utc_now_iso() -> str:
@@ -98,6 +100,129 @@ def _parse_available(balance_str: Any, reserved_str: Any) -> float:
     bal = float(balance_str or 0)
     res = float(reserved_str or 0)
     return max(bal - res, 0.0)
+
+
+def _get_manage_client():
+    try:
+        return get_luno_admin_client(), True
+    except Exception:
+        return get_luno_client(), False
+
+
+def _normalize_name(raw: Any) -> str:
+    return str(raw or "").strip()
+
+
+def _load_currency_accounts(client: Any, currency: str) -> list[dict[str, Any]]:
+    res = client.get_balances()
+    rows = res.get("balance", [])
+    if not isinstance(rows, list):
+        raise ValueError("Unexpected balance response from Luno.")
+    accounts: list[dict[str, Any]] = []
+    for row in rows:
+        asset = str(row.get("asset", "")).upper()
+        if asset != currency:
+            continue
+        account = dict(row)
+        account["account_id"] = str(account.get("account_id", "")).strip()
+        account["name"] = _normalize_name(account.get("name"))
+        accounts.append(account)
+    if not accounts:
+        raise ValueError(f"No {currency} accounts returned from Luno.")
+    return accounts
+
+
+def _index_accounts_by_name(
+    accounts: list[dict[str, Any]]
+) -> dict[str, dict[str, Any]]:
+    name_map: dict[str, dict[str, Any]] = {}
+    duplicates = set()
+    for acct in accounts:
+        name = acct.get("name", "")
+        if not name:
+            continue
+        key = name.upper()
+        if key in name_map:
+            duplicates.add(key)
+            continue
+        name_map[key] = acct
+    if duplicates:
+        dup_names = ", ".join(sorted(duplicates))
+        raise ValueError(f"Duplicate MYR account names: {dup_names}")
+    return name_map
+
+
+def _ensure_named_accounts(
+    client: Any, currency: str, required_names: list[str]
+) -> tuple[list[dict[str, Any]], list[str]]:
+    accounts = _load_currency_accounts(client, currency)
+    name_map = _index_accounts_by_name(accounts)
+    missing = [n for n in required_names if n.upper() not in name_map]
+    if not missing:
+        return accounts, []
+
+    if len(accounts) + len(missing) > 10:
+        raise ValueError("Creating accounts would exceed Luno limit of 10 per currency.")
+
+    for name in missing:
+        client.create_account(currency, name)
+
+    accounts = _load_currency_accounts(client, currency)
+    return accounts, missing
+
+
+def assign_myr_accounts_to_traders(names: list[str]) -> dict[str, Any]:
+    """
+    Ensure MYR_{i} accounts exist and assign each trader to its index account.
+    """
+    if not names:
+        return {"created_accounts": [], "assignments": [], "used_admin": False}
+    if len(names) > MAX_MYR_TRADERS:
+        raise ValueError(
+            f"Too many traders: {len(names)} (max {MAX_MYR_TRADERS})"
+        )
+
+    client, used_admin = _get_manage_client()
+    currency = get_counter_currency().upper()
+
+    required_names = [
+        f"{MYR_ACCOUNT_PREFIX}{i}" for i in range(1, len(names) + 1)
+    ]
+    accounts, created_accounts = _ensure_named_accounts(
+        client, currency, required_names
+    )
+
+    name_map = _index_accounts_by_name(accounts)
+    assignments = []
+    for idx, trader_name in enumerate(names, 1):
+        target_name = f"{MYR_ACCOUNT_PREFIX}{idx}"
+        account = name_map.get(target_name.upper())
+        if account is None:
+            raise ValueError(f"Missing {target_name} account.")
+        account_id = str(account.get("account_id", "")).strip()
+        if not account_id:
+            raise ValueError(f"Missing account_id for {target_name}.")
+        balance = _parse_available(account.get("balance"), account.get("reserved"))
+
+        acc = Account.get(trader_name)
+        acc.account_id = account_id
+        acc.balance = float(balance)
+        acc.save()
+
+        assignments.append(
+            {
+                "trader": trader_name,
+                "myr_account": target_name,
+                "account_id": account_id,
+                "balance": float(balance),
+            }
+        )
+
+    return {
+        "created_accounts": created_accounts,
+        "assignments": assignments,
+        "used_admin": used_admin,
+    }
 
 
 class Transaction(BaseModel):
@@ -304,6 +429,10 @@ class Account(BaseModel):
         else:
             self.holdings = h
 
+    def _counter_account_id(self) -> str | None:
+        account_id = str(self.account_id or "").strip()
+        return account_id if account_id else None
+
     # ---------------- Market rules ----------------
     def _get_market_rules(self, market_id: str) -> dict[str, Any]:
         """
@@ -360,9 +489,22 @@ class Account(BaseModel):
             raise ValueError("No balances returned from Luno.")
 
         counter = get_counter_currency().upper()
-        cc_row = df.loc[df["asset"] == counter]
-        if cc_row.empty:
+        cc_rows = df.loc[df["asset"] == counter]
+        if cc_rows.empty:
             raise ValueError(f"{counter} balance not found.")
+
+        target_id = str(self.account_id or "").strip()
+        if target_id:
+            match = cc_rows.loc[
+                cc_rows["account_id"].astype(str) == target_id
+            ]
+            if match.empty:
+                raise ValueError(
+                    f"{counter} account_id not found: {target_id}"
+                )
+            cc_row = match
+        else:
+            cc_row = cc_rows
 
         self.account_id = str(cc_row["account_id"].iloc[0])
         self.balance = _parse_available(
@@ -647,7 +789,10 @@ class Account(BaseModel):
         order = None
         if self.account_type == "live":
             order = client.post_market_order(
-                pair=m, type="BUY", counter_volume=est_cost
+                pair=m,
+                type="BUY",
+                counter_volume=est_cost,
+                counter_account_id=self._counter_account_id(),
             )
         else:
             # ✅ PAPER EXECUTION
@@ -791,7 +936,12 @@ class Account(BaseModel):
 
         order = None
         if self.account_type == "live":
-            order = client.post_market_order(pair=m, type="SELL", base_volume=quantity)
+            order = client.post_market_order(
+                pair=m,
+                type="SELL",
+                base_volume=quantity,
+                counter_account_id=self._counter_account_id(),
+            )
         else:
             # ✅ PAPER EXECUTION
             self._apply_paper_sell(base_asset, quantity, est_proceeds)

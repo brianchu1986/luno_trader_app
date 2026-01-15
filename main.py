@@ -13,7 +13,8 @@ from logging.handlers import RotatingFileHandler
 from typing import List
 
 from app import load_env
-from app.libs.account import Account
+from app.libs.account import Account, assign_myr_accounts_to_traders
+from app.libs.admin import distribute_myr_balances, parse_myr_balances_arg
 from app.libs.tracers import LogTracer
 from app.libs.traders import Trader
 from agents import add_trace_processor
@@ -154,6 +155,15 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Run in LIVE mode (default is dry_run)",
     )
+    p.add_argument(
+        "--myr-balances",
+        default=None,
+        help=(
+            "Admin: reset MYR accounts to MYR_0 and distribute balances to MYR_1..MYR_9. "
+            "Comma-separated list, max 9 items (e.g. 20,10,3.5). "
+            "Requires LUNO_ADMIN_KEY/LUNO_ADMIN_SECRET."
+        ),
+    )
     return p.parse_args()
 
 
@@ -242,6 +252,52 @@ def apply_account_type(names: List[str], account_type: str) -> None:
             Account.get(name).set_account_type(account_type)
         except Exception as e:
             log.warning(f"Failed to set account_type for {name}: {e}")
+
+
+def apply_myr_accounts(names: List[str]) -> None:
+    if not names:
+        return
+    summary = assign_myr_accounts_to_traders(names)
+    if summary.get("created_accounts"):
+        log.info(
+            "Created MYR accounts: %s",
+            ", ".join(summary["created_accounts"]),
+        )
+    if summary.get("assignments"):
+        mapping = ", ".join(
+            f"{a['trader']}->{a['myr_account']}" for a in summary["assignments"]
+        )
+        log.info("Assigned MYR accounts: %s", mapping)
+
+
+def run_admin_myr_balances(raw: str, log_level: str | None) -> None:
+    setup_logging(log_level)
+    balances = parse_myr_balances_arg(raw)
+    if not balances:
+        raise ValueError("--myr-balances requires at least one value.")
+
+    summary = distribute_myr_balances(balances)
+    reset = summary["reset"]
+
+    log.info(
+        "Admin MYR reset: renamed=%s moved_total=%s move_count=%s myr0_id=%s",
+        reset["renamed"],
+        reset["moved_total"],
+        reset["move_count"],
+        reset["myr0_account_id"],
+    )
+    if summary["created_accounts"]:
+        log.info(
+            "Admin MYR accounts created: %s",
+            ", ".join(summary["created_accounts"]),
+        )
+    log.info(
+        "Admin MYR distribution: total=%s move_count=%s remaining=%s myr0_id=%s",
+        summary["distribution_total"],
+        summary["move_count"],
+        summary["remaining_balance"],
+        summary["myr0_account_id"],
+    )
 
 
 # -------------------------
@@ -359,12 +415,21 @@ async def scheduler_loop(cfg: dict) -> None:
 def main() -> None:
     load_env()
     args = parse_args()
+
+    if args.myr_balances is not None:
+        try:
+            run_admin_myr_balances(args.myr_balances, args.log_level)
+        except Exception as e:
+            log.exception(f"Admin MYR balance distribution failed: {e}")
+            raise
+        return
     cfg = resolve_config(args)
 
     global TRADER_TIMEOUT_SECONDS
     TRADER_TIMEOUT_SECONDS = cfg["timeout_seconds"]
 
     setup_logging(cfg["log_level"])
+    apply_myr_accounts(cfg["names"])
     apply_account_type(cfg["names"], cfg["account_type"])
 
     try:
