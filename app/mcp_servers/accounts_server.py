@@ -5,7 +5,7 @@ import asyncio
 from typing import Any
 
 from mcp.server.fastmcp import FastMCP
-from app.libs.account import Account
+from app.libs.account import Account, TradeResult
 
 mcp = FastMCP("accounts_server")
 
@@ -15,6 +15,15 @@ mcp = FastMCP("accounts_server")
 # ----------------------------
 def _err(action: str, e: Exception) -> str:
     return f"ERROR[{action}]: {type(e).__name__}: {e}"
+
+def _trade_err(action: str, market_id: str, e: Exception) -> TradeResult:
+    return TradeResult(
+        ok=False,
+        action=action,
+        market_id=market_id,
+        reason="SERVER_ERROR",
+        suggestion=str(e),
+    )
 
 
 async def _to_thread(fn, *args, **kwargs):
@@ -108,7 +117,7 @@ async def snapshot_portfolio_value(name: str, refresh: bool = True) -> str:
 # order sizing + trade tools
 # ----------------------------
 @mcp.tool()
-async def get_estimate_qty(name: str, market_id: str, spend_myr: float) -> float:
+async def get_estimate_qty(name: str, market_id: str, spend_myr: float) -> TradeResult:
     """Estimate buyable quantity for a MYR market using ASK price.
 
     Agent guidance:
@@ -117,6 +126,7 @@ async def get_estimate_qty(name: str, market_id: str, spend_myr: float) -> float
       - min_volume
       - volume_scale (rounded down)
     - Then call buy_pair(market_id, quantity, rationale).
+    - Check result.ok before using result.quantity.
 
     Args:
         name: Account holder name
@@ -126,13 +136,12 @@ async def get_estimate_qty(name: str, market_id: str, spend_myr: float) -> float
     acc = Account.get(name)
     try:
         return await _to_thread(acc.get_estimate_qty, market_id, spend_myr)
-    except Exception:
-        # keep float output; -1 indicates failure
-        return -1.0
+    except Exception as e:
+        return _trade_err("ESTIMATE_BUY_QTY", market_id, e)
 
 
 @mcp.tool()
-async def buy_pair(name: str, market_id: str, quantity: float, rationale: str) -> str:
+async def buy_pair(name: str, market_id: str, quantity: float, rationale: str) -> TradeResult:
     """Buy base-asset units on a MYR market.
 
     Args:
@@ -145,11 +154,11 @@ async def buy_pair(name: str, market_id: str, quantity: float, rationale: str) -
     try:
         return await _to_thread(acc.buy_pair, market_id, quantity, rationale)
     except Exception as e:
-        return _err("buy_pair", e)
+        return _trade_err("BUY", market_id, e)
 
 
 @mcp.tool()
-async def sell_pair(name: str, market_id: str, quantity: float, rationale: str) -> str:
+async def sell_pair(name: str, market_id: str, quantity: float, rationale: str) -> TradeResult:
     """Sell base-asset units on a MYR market.
 
     Args:
@@ -162,7 +171,7 @@ async def sell_pair(name: str, market_id: str, quantity: float, rationale: str) 
     try:
         return await _to_thread(acc.sell_pair, market_id, quantity, rationale)
     except Exception as e:
-        return _err("sell_pair", e)
+        return _trade_err("SELL", market_id, e)
 
 
 # ----------------------------

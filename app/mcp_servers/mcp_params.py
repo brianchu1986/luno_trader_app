@@ -17,6 +17,7 @@ MCP_DIR = BASE_DIR
 MEMORY_DIR = PROJECT_ROOT / "memory"
 MEMORY_DIR.mkdir(parents=True, exist_ok=True)
 
+
 # -------------------------------------------------
 # Env vars
 # -------------------------------------------------
@@ -36,6 +37,14 @@ brave_env = {}
 if BRAVE_API_KEY:
     brave_env["BRAVE_API_KEY"] = BRAVE_API_KEY
 
+LUNO_API_KEY = os.getenv("LUNO_API_KEY")
+LUNO_API_SECRET = os.getenv("LUNO_API_SECRET")
+luno_env = {}
+if LUNO_API_KEY:
+    luno_env["LUNO_API_KEY"] = LUNO_API_KEY
+if LUNO_API_SECRET:
+    luno_env["LUNO_API_SECRET"] = LUNO_API_SECRET
+
 # -------------------------------------------------
 # Trader MCP servers
 # -------------------------------------------------
@@ -51,16 +60,20 @@ trader_mcp_server_params = [
     },
 ]
 
+if luno_env:
+    for params in trader_mcp_server_params:
+        params["env"] = luno_env
+
 
 # -------------------------------------------------
 # Researcher MCP servers
 # -------------------------------------------------
 def researcher_mcp_server_params(name: str):
     params = [
-        # Simple fetch server
+        # Simple fetch server (local, more robust)
         {
-            "command": "uvx",
-            "args": ["mcp-server-fetch"],
+            "command": "uv",
+            "args": ["run", "-m", "app.mcp_servers.fetch_server"],
         },
     ]
 
