@@ -16,6 +16,7 @@ mcp = FastMCP("accounts_server")
 def _err(action: str, e: Exception) -> str:
     return f"ERROR[{action}]: {type(e).__name__}: {e}"
 
+
 def _trade_err(action: str, market_id: str, e: Exception) -> TradeResult:
     return TradeResult(
         ok=False,
@@ -161,8 +162,8 @@ async def get_estimate_qty(name: str, market_id: str, spend_myr: float) -> Trade
     Agent guidance:
     - Agents usually decide a MYR budget first.
     - Call this tool to convert spend_myr -> quantity that respects:
-      - min_volume
-      - volume_scale (rounded down)
+    - min_volume
+    - volume_scale (rounded down)
     - Then call buy_pair(market_id, quantity, rationale).
     - Check result.ok before using result.quantity.
 
@@ -179,7 +180,9 @@ async def get_estimate_qty(name: str, market_id: str, spend_myr: float) -> Trade
 
 
 @mcp.tool()
-async def buy_pair(name: str, market_id: str, quantity: float, rationale: str) -> TradeResult:
+async def buy_pair(
+    name: str, market_id: str, quantity: float, rationale: str
+) -> TradeResult:
     """Buy base-asset units on a MYR market.
 
     Args:
@@ -196,7 +199,9 @@ async def buy_pair(name: str, market_id: str, quantity: float, rationale: str) -
 
 
 @mcp.tool()
-async def sell_pair(name: str, market_id: str, quantity: float, rationale: str) -> TradeResult:
+async def sell_pair(
+    name: str, market_id: str, quantity: float, rationale: str
+) -> TradeResult:
     """Sell base-asset units on a MYR market.
 
     Args:

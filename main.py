@@ -154,8 +154,8 @@ def resolve_config(args: argparse.Namespace) -> dict:
 
     if use_many_models:
         model_names = [
-            os.getenv("MODEL_1", "gpt-5-mini"),
-            # os.getenv("MODEL_2", "deepseek-chat"),
+            # os.getenv("MODEL_1", "gpt-5-mini"),
+            os.getenv("MODEL_2", "deepseek-chat"),
         ]
         model_names = model_names[: len(names)]
         if len(model_names) < len(names):
@@ -163,9 +163,7 @@ def resolve_config(args: argparse.Namespace) -> dict:
     else:
         model_names = [os.getenv("MODEL_DEFAULT", "gpt-5-mini")] * len(names)
 
-    print("use_many_models : ", use_many_models)
-
-    return {
+    config = {
         "run_every_minutes": int(run_every),
         "use_many_models": use_many_models,
         "names": names,
@@ -176,6 +174,8 @@ def resolve_config(args: argparse.Namespace) -> dict:
         "account_type": account_type,
         "timeout_seconds": int(timeout_seconds),
     }
+    print("config : ", config)
+    return config
 
 
 def apply_account_type(names: List[str], account_type: str) -> None:
@@ -201,8 +201,8 @@ def create_traders(cfg: dict) -> List[Trader]:
 async def run_trader_safe(trader: Trader) -> None:
     """
     Run trader with:
-      - jitter to avoid burst
-      - timeout guard to prevent hangs
+    - jitter to avoid burst
+    - timeout guard to prevent hangs
     """
     jitter = random.uniform(0, JITTER_SECONDS)
     await asyncio.sleep(jitter)

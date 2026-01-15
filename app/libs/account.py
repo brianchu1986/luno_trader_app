@@ -103,14 +103,14 @@ def _parse_available(balance_str: Any, reserved_str: Any) -> float:
 class Transaction(BaseModel):
     market_id: str
     side: Literal["BUY", "SELL"]
-    quantity: float          # base asset units intended
-    price: float             # last_trade snapshot (not guaranteed fill)
+    quantity: float  # base asset units intended
+    price: float  # last_trade snapshot (not guaranteed fill)
     timestamp: str
     rationale: str
-    
-    def total(self) -> float: 
-        return self.quantity * self.price 
-    
+
+    def total(self) -> float:
+        return self.quantity * self.price
+
     def __repr__(self):
         return (
             f"{self.side} {abs(self.quantity)} "
@@ -118,17 +118,16 @@ class Transaction(BaseModel):
         )
 
 
-
 class TradeResult(BaseModel):
     ok: bool
     action: Literal["ESTIMATE_BUY_QTY", "BUY", "SELL"]
     market_id: str
-    
+
     # Success fields
-    quantity: Optional[float] = None          # base quantity
-    spend_myr: Optional[float] = None         # requested spend (estimate tool)
-    est_cost: Optional[float] = None          # estimated MYR cost (buy)
-    est_proceeds: Optional[float] = None      # estimated MYR proceeds (sell)
+    quantity: Optional[float] = None  # base quantity
+    spend_myr: Optional[float] = None  # requested spend (estimate tool)
+    est_cost: Optional[float] = None  # estimated MYR cost (buy)
+    est_proceeds: Optional[float] = None  # estimated MYR proceeds (sell)
     bid: Optional[float] = None
     ask: Optional[float] = None
     last_trade: Optional[float] = None
@@ -223,7 +222,9 @@ class Account(BaseModel):
 
         # backward compat: if old DB record doesn’t have these keys
         fields.setdefault("account_type", "dry_run")
-        fields.setdefault("paper_balance", float(fields.get("balance", INITIAL_BALANCE)))
+        fields.setdefault(
+            "paper_balance", float(fields.get("balance", INITIAL_BALANCE))
+        )
         fields.setdefault("paper_holdings", dict(fields.get("holdings", {})))
         return cls(**fields)
 
@@ -233,7 +234,7 @@ class Account(BaseModel):
     def set_account_type(self, account_type: str) -> str:
         """
         Set the account execution mode.
- 
+
         Allowed values:
         - "dry_run": simulate trades only (no orders sent to Luno)
         - "live": execute real trades on Luno
@@ -243,13 +244,15 @@ class Account(BaseModel):
             raise TypeError("account_type must be a string")
         normalized = account_type.strip().lower()
         if normalized not in allowed:
-            raise ValueError(f"Invalid account_type '{normalized}'. Allowed: {sorted(allowed)}")
+            raise ValueError(
+                f"Invalid account_type '{normalized}'. Allowed: {sorted(allowed)}"
+            )
 
         self.account_type = normalized
         self.save()
         write_log(self.name, "account", f"Account type set to {normalized}")
         return f"Account type set to {normalized}"
-    
+
     # ---------- strategy ----------
     def change_strategy(self, strategy: str) -> str:
         """At your discretion, if you choose to, call this to change your investment strategy for the future."""
@@ -346,9 +349,9 @@ class Account(BaseModel):
         """
         Source of truth sync from Luno.
         Updates:
-          - self.balance as counter available (balance - reserved)
-          - self.account_id from counter row
-          - self.holdings for ALL non-counter assets as available (balance - reserved)
+        - self.balance as counter available (balance - reserved)
+        - self.account_id from counter row
+        - self.holdings for ALL non-counter assets as available (balance - reserved)
         """
         client = get_luno_client()
         res = client.get_balances()
@@ -362,7 +365,9 @@ class Account(BaseModel):
             raise ValueError(f"{counter} balance not found.")
 
         self.account_id = str(cc_row["account_id"].iloc[0])
-        self.balance = _parse_available(cc_row["balance"].iloc[0], cc_row["reserved"].iloc[0])
+        self.balance = _parse_available(
+            cc_row["balance"].iloc[0], cc_row["reserved"].iloc[0]
+        )
 
         new_holdings: dict[str, float] = {}
         for _, r in df.iterrows():
@@ -380,17 +385,17 @@ class Account(BaseModel):
     def paper_reset_from_luno(self) -> str:
         """
         Initialize or reset the paper wallet using current LIVE Luno balances.
-    
+
         Behavior:
         - Reads LIVE balances from Luno (read-only).
         - Copies available MYR → paper_balance.
         - Copies available assets → paper_holdings.
         - Does NOT send any orders.
-    
+
         When to use:
         - Before starting a paper trading session.
         - When you want paper trading to reflect current real balances.
-    
+
         Safe:
         - No trading side effects.
         """
@@ -428,14 +433,14 @@ class Account(BaseModel):
     def get_estimate_qty(self, market_id: str, spend_myr: float) -> TradeResult:
         """
         Estimate how much base asset can be bought for a given MYR budget.
-    
+
         This function MUST be called by an AI agent before buy_pair().
-    
+
         Why:
         - buy_pair() requires a base-asset quantity.
         - Agents usually reason in MYR budgets.
         - This function converts MYR → quantity safely.
-    
+
         How estimation works:
         - Uses current ASK price (BUY hits ask).
         - Uses available wallet:
@@ -444,12 +449,12 @@ class Account(BaseModel):
         - Applies market rules:
             - min_volume
             - volume_scale (rounded DOWN)
-    
+
         Returns:
             TradeResult with:
             - ok=True and quantity if tradable
             - ok=False with reason and suggestion if not
-    
+
         Agent pattern:
             est = get_estimate_qty(...)
             if est.ok:
@@ -460,9 +465,14 @@ class Account(BaseModel):
 
         m = _assert_counter_market(market_id)
         if spend_myr <= 0:
-            return TradeResult(ok=False, action="ESTIMATE_BUY_QTY", market_id=m,
-                               reason="INVALID_SPEND", want=spend_myr,
-                               suggestion="spend_myr must be > 0")
+            return TradeResult(
+                ok=False,
+                action="ESTIMATE_BUY_QTY",
+                market_id=m,
+                reason="INVALID_SPEND",
+                want=spend_myr,
+                suggestion="spend_myr must be > 0",
+            )
 
         client = get_luno_client()
         ticker = client.get_ticker(pair=m)
@@ -471,55 +481,90 @@ class Account(BaseModel):
         last_trade = float(ticker["last_trade"])
 
         if ask <= 0:
-            return TradeResult(ok=False, action="ESTIMATE_BUY_QTY", market_id=m,
-                               reason="INVALID_ASK", ask=ask, bid=bid, last_trade=last_trade)
+            return TradeResult(
+                ok=False,
+                action="ESTIMATE_BUY_QTY",
+                market_id=m,
+                reason="INVALID_ASK",
+                ask=ask,
+                bid=bid,
+                last_trade=last_trade,
+            )
 
         # ✅ in dry_run, use paper_balance; in live, use real available balance
         available_ccy = self._wallet_balance()
         if spend_myr > available_ccy:
-            return TradeResult(ok=False, action="ESTIMATE_BUY_QTY", market_id=m,
-                               reason="INSUFFICIENT_MYR", have=available_ccy, want=spend_myr,
-                               ask=ask, bid=bid, last_trade=last_trade,
-                               suggestion="Reduce spend_myr or reset paper wallet")
+            return TradeResult(
+                ok=False,
+                action="ESTIMATE_BUY_QTY",
+                market_id=m,
+                reason="INSUFFICIENT_MYR",
+                have=available_ccy,
+                want=spend_myr,
+                ask=ask,
+                bid=bid,
+                last_trade=last_trade,
+                suggestion="Reduce spend_myr or reset paper wallet",
+            )
 
         raw_qty = spend_myr / ask
         try:
             qty = self._validate_and_round_volume(m, raw_qty)
         except ValueError as e:
-            return TradeResult(ok=False, action="ESTIMATE_BUY_QTY", market_id=m,
-                               reason="BELOW_MIN_VOLUME", suggestion=str(e),
-                               ask=ask, bid=bid, last_trade=last_trade)
+            return TradeResult(
+                ok=False,
+                action="ESTIMATE_BUY_QTY",
+                market_id=m,
+                reason="BELOW_MIN_VOLUME",
+                suggestion=str(e),
+                ask=ask,
+                bid=bid,
+                last_trade=last_trade,
+            )
 
         mid = (ask + bid) / 2 if (ask and bid) else ask
         spread_pct = (ask - bid) / mid if mid else 0.0
 
-        return TradeResult(ok=True, action="ESTIMATE_BUY_QTY", market_id=m,
-                           quantity=qty, spend_myr=spend_myr,
-                           ask=ask, bid=bid, last_trade=last_trade,
-                           spread_pct=spread_pct)
+        return TradeResult(
+            ok=True,
+            action="ESTIMATE_BUY_QTY",
+            market_id=m,
+            quantity=qty,
+            spend_myr=spend_myr,
+            ask=ask,
+            bid=bid,
+            last_trade=last_trade,
+            spread_pct=spread_pct,
+        )
 
     # ---------------- BUY / SELL ----------------
-    def buy_pair(self, market_id: str, quantity: float, rationale: str, max_spread_pct: float = 0.03) -> TradeResult:
+    def buy_pair(
+        self,
+        market_id: str,
+        quantity: float,
+        rationale: str,
+        max_spread_pct: float = 0.03,
+    ) -> TradeResult:
         """
         Execute or simulate a BUY on a MYR market.
-    
+
         BUY mechanics:
         - Uses ASK price for cost estimation.
         - Enforces min_volume and volume_scale.
         - Optional spread guard to avoid illiquid fills.
-    
+
         Execution:
         - LIVE:
             Sends MARKET BUY with counter_volume to Luno.
         - DRY_RUN:
             Deducts paper_balance.
             Increases paper_holdings.
-    
+
         Returns:
             TradeResult:
             - ok=True if accepted
             - ok=False with reason if blocked (no exception)
-    
+
         Notes for AI agents:
         - Quantity should come from get_estimate_qty().
         - Returned price is a decision snapshot, not guaranteed fill price.
@@ -529,15 +574,26 @@ class Account(BaseModel):
         base_asset = _base_asset_from_market(m)
 
         if quantity <= 0:
-            return TradeResult(ok=False, action="BUY", market_id=m,
-                               reason="INVALID_QTY", want=quantity,
-                               suggestion="quantity must be > 0")
+            return TradeResult(
+                ok=False,
+                action="BUY",
+                market_id=m,
+                reason="INVALID_QTY",
+                want=quantity,
+                suggestion="quantity must be > 0",
+            )
 
         try:
             quantity = self._validate_and_round_volume(m, quantity)
         except ValueError as e:
-            return TradeResult(ok=False, action="BUY", market_id=m,
-                               reason="INVALID_QTY_RULES", want=quantity, suggestion=str(e))
+            return TradeResult(
+                ok=False,
+                action="BUY",
+                market_id=m,
+                reason="INVALID_QTY_RULES",
+                want=quantity,
+                suggestion=str(e),
+            )
 
         client = get_luno_client()
         ticker = client.get_ticker(pair=m)
@@ -546,68 +602,117 @@ class Account(BaseModel):
         last_trade = float(ticker["last_trade"])
 
         if ask <= 0:
-            return TradeResult(ok=False, action="BUY", market_id=m, reason="INVALID_ASK",
-                               ask=ask, bid=bid, last_trade=last_trade)
+            return TradeResult(
+                ok=False,
+                action="BUY",
+                market_id=m,
+                reason="INVALID_ASK",
+                ask=ask,
+                bid=bid,
+                last_trade=last_trade,
+            )
 
         mid = (ask + bid) / 2 if (ask and bid) else ask
         spread_pct = (ask - bid) / mid if mid else 0.0
         if spread_pct > max_spread_pct:
-            return TradeResult(ok=False, action="BUY", market_id=m, reason="SPREAD_TOO_WIDE",
-                               ask=ask, bid=bid, last_trade=last_trade, spread_pct=spread_pct,
-                               suggestion=f"Wait spread <= {max_spread_pct:.2%}")
+            return TradeResult(
+                ok=False,
+                action="BUY",
+                market_id=m,
+                reason="SPREAD_TOO_WIDE",
+                ask=ask,
+                bid=bid,
+                last_trade=last_trade,
+                spread_pct=spread_pct,
+                suggestion=f"Wait spread <= {max_spread_pct:.2%}",
+            )
 
         est_cost = quantity * ask
         available_ccy = self._wallet_balance()
         if est_cost > available_ccy:
-            return TradeResult(ok=False, action="BUY", market_id=m, reason="INSUFFICIENT_MYR",
-                               have=available_ccy, want=est_cost,
-                               ask=ask, bid=bid, last_trade=last_trade, spread_pct=spread_pct,
-                               suggestion="Call get_estimate_qty() with smaller spend_myr")
+            return TradeResult(
+                ok=False,
+                action="BUY",
+                market_id=m,
+                reason="INSUFFICIENT_MYR",
+                have=available_ccy,
+                want=est_cost,
+                ask=ask,
+                bid=bid,
+                last_trade=last_trade,
+                spread_pct=spread_pct,
+                suggestion="Call get_estimate_qty() with smaller spend_myr",
+            )
 
         order = None
         if self.account_type == "live":
-            order = client.post_market_order(pair=m, type="BUY", counter_volume=est_cost)
+            order = client.post_market_order(
+                pair=m, type="BUY", counter_volume=est_cost
+            )
         else:
             # ✅ PAPER EXECUTION
             self._apply_paper_buy(base_asset, quantity, est_cost)
 
-        self.transactions.append(Transaction(
-            market_id=m, side="BUY", quantity=float(quantity),
-            price=last_trade, timestamp=_utc_now_iso(), rationale=rationale
-        ))
+        self.transactions.append(
+            Transaction(
+                market_id=m,
+                side="BUY",
+                quantity=float(quantity),
+                price=last_trade,
+                timestamp=_utc_now_iso(),
+                rationale=rationale,
+            )
+        )
 
-        write_log(self.name, "trade",
-                  f"{self.account_type.upper()} BUY qty={quantity} {m} ask={ask} bid={bid} "
-                  f"est_cost~{est_cost:.2f} spread={spread_pct:.2%}")
+        write_log(
+            self.name,
+            "trade",
+            f"{self.account_type.upper()} BUY qty={quantity} {m} ask={ask} bid={bid} "
+            f"est_cost~{est_cost:.2f} spread={spread_pct:.2%}",
+        )
 
         self.save()
 
-        return TradeResult(ok=True, action="BUY", market_id=m,
-                           quantity=quantity, est_cost=est_cost,
-                           ask=ask, bid=bid, last_trade=last_trade,
-                           spread_pct=spread_pct, order=order)
+        return TradeResult(
+            ok=True,
+            action="BUY",
+            market_id=m,
+            quantity=quantity,
+            est_cost=est_cost,
+            ask=ask,
+            bid=bid,
+            last_trade=last_trade,
+            spread_pct=spread_pct,
+            order=order,
+        )
 
-    def sell_pair(self, market_id: str, quantity: float, rationale: str, max_spread_pct: float = 0.03) -> TradeResult:
+    def sell_pair(
+        self,
+        market_id: str,
+        quantity: float,
+        rationale: str,
+        max_spread_pct: float = 0.03,
+    ) -> TradeResult:
         """
         Execute or simulate a SELL on a MYR market.
-    
+
         SELL mechanics:
         - Uses BID price for proceeds estimation.
         - Enforces min_volume and volume_scale.
         - Optional spread guard.
-    
+
         Execution:
         - LIVE:
             Sends MARKET SELL with base_volume to Luno.
         - DRY_RUN:
             Reduces paper_holdings.
             Increases paper_balance.
-    
+
         Returns:
             TradeResult:
             - ok=True if accepted
             - ok=False if insufficient asset or blocked
-    
+
         AI guidance:
         - Always check available holdings before selling.
         """
@@ -616,15 +721,26 @@ class Account(BaseModel):
         base_asset = _base_asset_from_market(m)
 
         if quantity <= 0:
-            return TradeResult(ok=False, action="SELL", market_id=m,
-                               reason="INVALID_QTY", want=quantity,
-                               suggestion="quantity must be > 0")
+            return TradeResult(
+                ok=False,
+                action="SELL",
+                market_id=m,
+                reason="INVALID_QTY",
+                want=quantity,
+                suggestion="quantity must be > 0",
+            )
 
         try:
             quantity = self._validate_and_round_volume(m, quantity)
         except ValueError as e:
-            return TradeResult(ok=False, action="SELL", market_id=m,
-                               reason="INVALID_QTY_RULES", want=quantity, suggestion=str(e))
+            return TradeResult(
+                ok=False,
+                action="SELL",
+                market_id=m,
+                reason="INVALID_QTY_RULES",
+                want=quantity,
+                suggestion=str(e),
+            )
 
         client = get_luno_client()
         ticker = client.get_ticker(pair=m)
@@ -633,22 +749,43 @@ class Account(BaseModel):
         last_trade = float(ticker["last_trade"])
 
         if bid <= 0:
-            return TradeResult(ok=False, action="SELL", market_id=m, reason="INVALID_BID",
-                               ask=ask, bid=bid, last_trade=last_trade)
+            return TradeResult(
+                ok=False,
+                action="SELL",
+                market_id=m,
+                reason="INVALID_BID",
+                ask=ask,
+                bid=bid,
+                last_trade=last_trade,
+            )
 
         mid = (ask + bid) / 2 if (ask and bid) else bid
         spread_pct = (ask - bid) / mid if mid else 0.0
         if spread_pct > max_spread_pct:
-            return TradeResult(ok=False, action="SELL", market_id=m, reason="SPREAD_TOO_WIDE",
-                               ask=ask, bid=bid, last_trade=last_trade, spread_pct=spread_pct,
-                               suggestion=f"Wait spread <= {max_spread_pct:.2%}")
+            return TradeResult(
+                ok=False,
+                action="SELL",
+                market_id=m,
+                reason="SPREAD_TOO_WIDE",
+                ask=ask,
+                bid=bid,
+                last_trade=last_trade,
+                spread_pct=spread_pct,
+                suggestion=f"Wait spread <= {max_spread_pct:.2%}",
+            )
 
         wallet_holdings = self._wallet_holdings()
         have = float(wallet_holdings.get(base_asset, 0.0))
         if quantity > have:
-            return TradeResult(ok=False, action="SELL", market_id=m, reason="INSUFFICIENT_ASSET",
-                               have=have, want=quantity,
-                               suggestion=f"Resize <= available {base_asset} ({have})")
+            return TradeResult(
+                ok=False,
+                action="SELL",
+                market_id=m,
+                reason="INSUFFICIENT_ASSET",
+                have=have,
+                want=quantity,
+                suggestion=f"Resize <= available {base_asset} ({have})",
+            )
 
         est_proceeds = quantity * bid
 
@@ -659,40 +796,57 @@ class Account(BaseModel):
             # ✅ PAPER EXECUTION
             self._apply_paper_sell(base_asset, quantity, est_proceeds)
 
-        self.transactions.append(Transaction(
-            market_id=m, side="SELL", quantity=float(quantity),
-            price=last_trade, timestamp=_utc_now_iso(), rationale=rationale
-        ))
+        self.transactions.append(
+            Transaction(
+                market_id=m,
+                side="SELL",
+                quantity=float(quantity),
+                price=last_trade,
+                timestamp=_utc_now_iso(),
+                rationale=rationale,
+            )
+        )
 
-        write_log(self.name, "trade",
-                  f"{self.account_type.upper()} SELL qty={quantity} {m} bid={bid} ask={ask} "
-                  f"est_proceeds~{est_proceeds:.2f} spread={spread_pct:.2%}")
+        write_log(
+            self.name,
+            "trade",
+            f"{self.account_type.upper()} SELL qty={quantity} {m} bid={bid} ask={ask} "
+            f"est_proceeds~{est_proceeds:.2f} spread={spread_pct:.2%}",
+        )
 
         self.save()
 
-        return TradeResult(ok=True, action="SELL", market_id=m,
-                           quantity=quantity, est_proceeds=est_proceeds,
-                           ask=ask, bid=bid, last_trade=last_trade,
-                           spread_pct=spread_pct, order=order)
-    
+        return TradeResult(
+            ok=True,
+            action="SELL",
+            market_id=m,
+            quantity=quantity,
+            est_proceeds=est_proceeds,
+            ask=ask,
+            bid=bid,
+            last_trade=last_trade,
+            spread_pct=spread_pct,
+            order=order,
+        )
+
     def compute_portfolio_value(self) -> float:
         """
         Compute total portfolio value in MYR.
-    
+
         Valuation rules:
         - Counter currency (MYR) uses available balance.
         - Crypto assets are valued using BID price (realistic liquidation value).
         - LIVE mode uses real Luno balances.
         - DRY_RUN mode uses paper balances.
-    
+
         Returns:
             Total portfolio value in MYR as float.
         """
         client = get_luno_client()
         counter = get_counter_currency().upper()
-    
+
         total = Decimal("0")
-    
+
         # Choose wallet source
         if self.account_type == "dry_run":
             total += Decimal(str(self.paper_balance))
@@ -702,28 +856,28 @@ class Account(BaseModel):
             self.refresh_from_luno()
             total += Decimal(str(self.balance))
             holdings = self.holdings
-    
+
         for asset, qty in holdings.items():
             if qty <= 0:
                 continue
-    
+
             market_id = f"{asset}{counter}"
-    
+
             try:
                 ticker = client.get_ticker(pair=market_id)
                 bid = Decimal(ticker["bid"])
             except Exception:
                 # If market not available, skip valuation
                 continue
-    
+
             total += Decimal(str(qty)) * bid
-    
+
         return float(total)
-    
+
     def snapshot_portfolio_value(self) -> float:
         """
         Compute and store a portfolio value snapshot with timestamp.
-    
+
         Useful for:
         - Equity curve
         - Strategy evaluation
@@ -733,5 +887,3 @@ class Account(BaseModel):
         self.portfolio_value_time_series.append((_utc_now_iso(), value))
         self.save()
         return value
-
-
