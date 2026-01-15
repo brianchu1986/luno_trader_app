@@ -119,12 +119,16 @@ async def snapshot_portfolio_value(name: str, refresh: bool = True) -> str:
 
     Args:
         name: Account holder name
-        refresh: If true, refresh from Luno first (recommended)
+        refresh: If true, refresh from Luno first (live) or seed paper wallet if empty (dry_run)
     """
     acc = Account.get(name)
     try:
         if refresh:
-            await _to_thread(acc.refresh_from_luno)
+            if acc.account_type == "dry_run":
+                if acc.paper_balance <= 0 and not acc.paper_holdings:
+                    await _to_thread(acc.paper_reset_from_luno)
+            else:
+                await _to_thread(acc.refresh_from_luno)
         value = await _to_thread(acc.snapshot_portfolio_value)
         return f"OK: Snapshot saved. portfolio_value=RM {value:.2f}"
     except Exception as e:
