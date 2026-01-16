@@ -41,7 +41,7 @@ Copy `.env.example` to `.env` and fill in values:
 
 -   `LUNO_API_KEY` / `LUNO_API_SECRET`: Required for market access and live orders.
 -   `LUNO_ADMIN_KEY` / `LUNO_ADMIN_SECRET`: Required only for MYR distribution.
--   `LOG_LEVEL`, `LOG_DIR`, `RUN_EVERY_N_MINUTES`, `TRADER_TIMEOUT_SECONDS`: Scheduler settings.
+-   `LOG_LEVEL`, `LOG_DIR`, `RUN_EVERY_N_MINUTES`, `TRADER_TIMEOUT_SECONDS`, `TRADER_MAX_TURNS`: Scheduler settings.
 -   `MODEL_DEFAULT`, `MODEL_1`, `MODEL_2`: Optional model selection overrides.
 -   `OPENAI_API_KEY`, `DEEPSEEK_API_KEY`, `BRAVE_SEARCH_API`: Optional tool and LLM integrations.
 
@@ -76,6 +76,7 @@ Key CLI flags:
 -   `--strategies`: Strategy keys or text aligned with `--names`.
 -   `--models`, `--model-default`, `--many-models`: Model selection for LLM-assisted runs.
 -   `--once`: Run one cycle then exit.
+-   `--force-run`: Run immediately even if still within the cooldown window.
 -   `--live`: Enable live trading (default is dry_run).
 -   `--holdings`: Initialize per-trader portfolio holdings.
 -   `--myr-balances`: Admin reset and distribute MYR across trader accounts.
@@ -99,6 +100,13 @@ MYR capital distribution (conceptual):
     then distribute amounts to `MYR_1..MYR_n`.
 -   Trader accounts are assigned to MYR sub-accounts for spending; this command exits
     after completion and does not start the scheduler.
+
+## Cooldown Behavior
+
+-   Each trader stores `last_run` in the local DB, so restarts do not trigger immediate repeat runs.
+-   The cooldown window is based on `--run-every` (or `RUN_EVERY_N_MINUTES`).
+-   If you restart within the cooldown window, the scheduler waits and logs a countdown.
+-   Use `--force-run` to bypass the initial cooldown and run immediately.
 
 ## Project Status
 
