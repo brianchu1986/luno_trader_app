@@ -83,7 +83,7 @@ async def get_holdings(name: str, refresh: bool = False) -> dict[str, float]:
 
 @mcp.tool()
 async def refresh_account(name: str) -> str:
-    """Refresh balance + holdings from Luno (source of truth).
+    """Refresh counter balance from Luno (source of truth).
 
     Dry run behavior:
     - Portfolio holdings are kept in DB and not auto-synced.
@@ -181,7 +181,7 @@ async def get_estimate_qty(name: str, market_id: str, spend_myr: float) -> Trade
 
 @mcp.tool()
 async def get_max_limit_buy_qty(
-    name: str, market_id: str, price: float
+    name: str, market_id: str, price: float, refresh: bool = False
 ) -> LimitSizeResult:
     """Compute max BUY limit quantity based on available MYR balance.
 
@@ -189,9 +189,12 @@ async def get_max_limit_buy_qty(
         name: Account holder name
         market_id: Luno market id (e.g. GRTMYR, XBTMYR)
         price: Limit price
+        refresh: If true, refresh account from Luno (live only)
     """
     acc = Account.get(name)
     try:
+        if refresh and acc.account_type == "live":
+            await _to_thread(acc.refresh_from_luno)
         return await _to_thread(acc.get_max_limit_buy_qty, market_id, price)
     except Exception as e:
         return _size_err("MAX_LIMIT_BUY_QTY", market_id, e)
@@ -199,16 +202,19 @@ async def get_max_limit_buy_qty(
 
 @mcp.tool()
 async def get_max_limit_sell_qty(
-    name: str, market_id: str
+    name: str, market_id: str, refresh: bool = False
 ) -> LimitSizeResult:
     """Compute max SELL limit quantity based on available holdings.
 
     Args:
         name: Account holder name
         market_id: Luno market id (e.g. GRTMYR, XBTMYR)
+        refresh: If true, refresh account from Luno (live only)
     """
     acc = Account.get(name)
     try:
+        if refresh and acc.account_type == "live":
+            await _to_thread(acc.refresh_from_luno)
         return await _to_thread(acc.get_max_limit_sell_qty, market_id)
     except Exception as e:
         return _size_err("MAX_LIMIT_SELL_QTY", market_id, e)

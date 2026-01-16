@@ -30,7 +30,7 @@ from __future__ import annotations
 from pydantic import BaseModel, Field
 from dotenv import load_dotenv
 
-from app.libs.database import write_account, read_account, write_log
+from app.libs.database import write_account, read_account, write_log, list_account_names
 from app import get_luno_admin_client, get_luno_client, get_counter_currency
 
 from datetime import datetime, timezone
@@ -122,6 +122,25 @@ def _parse_available(balance_str: Any, reserved_str: Any) -> float:
     bal = float(balance_str or 0)
     res = float(reserved_str or 0)
     return max(bal - res, 0.0)
+
+
+def _get_asset_qty(holdings: Any, asset: str) -> float:
+    if not isinstance(holdings, dict):
+        return 0.0
+    asset_upper = str(asset or "").strip().upper()
+    if not asset_upper:
+        return 0.0
+    total = 0.0
+    for key, value in holdings.items():
+        if str(key or "").strip().upper() != asset_upper:
+            continue
+        try:
+            qty = float(value)
+        except (TypeError, ValueError):
+            continue
+        if qty > 0:
+            total += qty
+    return total
 
 
 def _get_manage_client():
@@ -654,6 +673,49 @@ class Account(BaseModel):
 
     def _wallet_holdings(self) -> dict[str, float]:
         return self.holdings
+
+    def _live_available_asset_total(self, asset: str) -> float:
+        asset_upper = str(asset or "").strip().upper()
+        if not asset_upper:
+            return 0.0
+        client = get_luno_client()
+        res = client.get_balances()
+        rows = res.get("balance", [])
+        if not isinstance(rows, list):
+            raise ValueError("Unexpected balance response from Luno.")
+        total = 0.0
+        for row in rows:
+            if str(row.get("asset", "")).upper() != asset_upper:
+                continue
+            total += _parse_available(row.get("balance"), row.get("reserved"))
+        return total
+
+    def _sum_other_trader_holdings(self, asset: str) -> float:
+        asset_upper = str(asset or "").strip().upper()
+        if not asset_upper:
+            return 0.0
+        total = 0.0
+        self_name = str(self.name or "").strip().lower()
+        for name in list_account_names():
+            other = str(name or "").strip().lower()
+            if not other or other == self_name:
+                continue
+            fields = read_account(other)
+            if not fields:
+                continue
+            if str(fields.get("account_type", "dry_run")).strip().lower() != "live":
+                continue
+            total += _get_asset_qty(fields.get("holdings"), asset_upper)
+        return total
+
+    def _effective_sell_holdings(self, asset: str) -> float:
+        own = _get_asset_qty(self._wallet_holdings(), asset)
+        if str(self.account_type or "").strip().lower() != "live":
+            return own
+        live_total = self._live_available_asset_total(asset)
+        other_alloc = self._sum_other_trader_holdings(asset)
+        remaining = max(live_total - other_alloc, 0.0)
+        return min(own, remaining)
 
     def _set_wallet_balance(self, v: float) -> None:
         self.balance = v
@@ -1222,7 +1284,16 @@ class Account(BaseModel):
         """
         m = _assert_counter_market(market_id)
         base_asset = _base_asset_from_market(m)
-        have = float(self._wallet_holdings().get(base_asset, 0.0))
+        try:
+            have = float(self._effective_sell_holdings(base_asset))
+        except Exception as exc:
+            return LimitSizeResult(
+                ok=False,
+                action="MAX_LIMIT_SELL_QTY",
+                market_id=m,
+                reason="LIVE_BALANCE_ERROR",
+                suggestion=str(exc),
+            )
         if have <= 0:
             return LimitSizeResult(
                 ok=False,
@@ -1548,8 +1619,16 @@ class Account(BaseModel):
                 suggestion=f"Wait spread <= {max_spread_pct:.2%}",
             )
 
-        wallet_holdings = self._wallet_holdings()
-        have = float(wallet_holdings.get(base_asset, 0.0))
+        try:
+            have = float(self._effective_sell_holdings(base_asset))
+        except Exception as exc:
+            return TradeResult(
+                ok=False,
+                action="SELL",
+                market_id=m,
+                reason="LIVE_BALANCE_ERROR",
+                suggestion=str(exc),
+            )
         if quantity > have:
             return TradeResult(
                 ok=False,
@@ -1718,7 +1797,16 @@ class Account(BaseModel):
                 )
         else:
             base_asset = _base_asset_from_market(m)
-            have = float(self._wallet_holdings().get(base_asset, 0.0))
+            try:
+                have = float(self._effective_sell_holdings(base_asset))
+            except Exception as exc:
+                return OrderResult(
+                    ok=False,
+                    action="POST_LIMIT",
+                    market_id=m,
+                    reason="LIVE_BALANCE_ERROR",
+                    suggestion=str(exc),
+                )
             if volume > have:
                 return OrderResult(
                     ok=False,

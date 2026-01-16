@@ -21,6 +21,7 @@ Order sizing rule (VERY IMPORTANT):
 - buy_pair() requires a BASE-ASSET QUANTITY, not MYR amount.
 
 Limit order rules:
+- For live accounts with stale data risk, refresh from Luno before sizing (refresh_account(name) or get_max_limit_*_qty(..., refresh=True)).
 - Use get_max_limit_buy_qty(market_id, price) before BUY limit orders.
 - Use get_max_limit_sell_qty(market_id) before SELL limit orders.
 - Place limit orders with post_limit_order(...).
@@ -29,6 +30,8 @@ Limit order rules:
 - client_order_id is auto-generated as "<trader>-<uuid>" for traceability.
 - Open limit orders do NOT reserve balance/holdings. Avoid overlapping orders
   that exceed available funds.
+- For live accounts with multiple traders, SELL sizing is capped by live total
+  minus other traders' allocated holdings in the DB.
 
 Costs and spread awareness:
 - Maker (limit) fees are typically ~0% to ~0.1%.

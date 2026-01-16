@@ -160,12 +160,21 @@ def assess_trade(
     holdings = acc.holdings or {}
     base_qty = float(holdings.get(base_asset, 0.0))
 
-    if side_norm == "SELL" and quantity > base_qty:
-        return RiskDecision(
-            ok=False,
-            reason="INSUFFICIENT_ASSET",
-            suggestion=f"Resize <= available {base_asset} ({base_qty}).",
-        )
+    if side_norm == "SELL":
+        try:
+            available_qty = float(acc._effective_sell_holdings(base_asset))
+        except Exception as exc:
+            return RiskDecision(
+                ok=False,
+                reason="LIVE_BALANCE_ERROR",
+                suggestion=str(exc),
+            )
+        if quantity > available_qty:
+            return RiskDecision(
+                ok=False,
+                reason="INSUFFICIENT_ASSET",
+                suggestion=f"Resize <= available {base_asset} ({available_qty}).",
+            )
 
     ticker = get_market_ticker(m)
     ask = float(ticker.get("ask") or 0.0)

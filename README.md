@@ -31,7 +31,7 @@ Scheduler -> Trader -> (Optional Researcher) -> Risk Guard -> Execution
 
 ## Installation
 
--   Python 3.10+ is required.
+-   Python 3.11+ is required.
 
 ```bash
 python -m venv .venv
