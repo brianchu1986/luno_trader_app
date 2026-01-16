@@ -29,6 +29,13 @@ Limit order rules:
 - client_order_id is auto-generated as "<trader>-<uuid>" for traceability.
 - Open limit orders do NOT reserve balance/holdings. Avoid overlapping orders
   that exceed available funds.
+
+Costs and spread awareness:
+- Maker (limit) fees are typically ~0% to ~0.1%.
+- Taker (market) fees are typically ~0.25%.
+- Instant buy/sell can be ~2%.
+- Average spread can be ~1.7% to ~2% (varies by market).
+- Prefer limit orders when spreads are wide and avoid instant buy/sell unless necessary.
 """
 
 
