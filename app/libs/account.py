@@ -1805,6 +1805,9 @@ class Account(BaseModel):
     ) -> OrderResult:
         """
         Cancel a LIMIT order.
+
+        Guard: only cancel orders tracked on this account or with this trader's
+        client_order_id prefix.
         """
         if order_id is None and client_order_id is None:
             return OrderResult(
@@ -1815,17 +1818,76 @@ class Account(BaseModel):
             )
 
         if self.account_type == "live":
-            record = self._find_order_record(order_id=order_id, client_order_id=client_order_id)
+            record = self._find_order_record(
+                order_id=order_id, client_order_id=client_order_id
+            )
             client = get_luno_client()
+            lookup = None
+            prefix = f"{_sanitize_client_order_prefix(self.name)}-"
+
+            if record is None:
+                if client_order_id:
+                    if not str(client_order_id).startswith(prefix):
+                        write_log(
+                            self.name,
+                            "order",
+                            f"BLOCK cancel client_order_id={client_order_id} reason=ORDER_NOT_OWNED",
+                        )
+                        return OrderResult(
+                            ok=False,
+                            action="CANCEL_ORDER",
+                            reason="ORDER_NOT_OWNED",
+                            suggestion="Use your own client_order_id prefix or cancel via the owning trader",
+                        )
+                if order_id:
+                    try:
+                        lookup = client.get_order_v3(id=order_id)
+                    except Exception:
+                        lookup = None
+                    lookup_client_id = (
+                        _extract_str_field(lookup, ["client_order_id"])
+                        if isinstance(lookup, dict)
+                        else None
+                    )
+                    if not lookup_client_id:
+                        return OrderResult(
+                            ok=False,
+                            action="CANCEL_ORDER",
+                            reason="ORDER_ID_NOT_FOUND",
+                            suggestion="Provide order_id or ensure order is tracked",
+                        )
+                    if not str(lookup_client_id).startswith(prefix):
+                        write_log(
+                            self.name,
+                            "order",
+                            f"BLOCK cancel order_id={order_id} reason=ORDER_NOT_OWNED",
+                        )
+                        return OrderResult(
+                            ok=False,
+                            action="CANCEL_ORDER",
+                            reason="ORDER_NOT_OWNED",
+                            suggestion="Use your own client_order_id prefix or cancel via the owning trader",
+                        )
+                    if client_order_id is None:
+                        client_order_id = lookup_client_id
+                if order_id is None and client_order_id:
+                    try:
+                        lookup = client.get_order_v3(client_order_id=client_order_id)
+                    except Exception:
+                        lookup = None
+                    if isinstance(lookup, dict):
+                        order_id = lookup.get("order_id") or lookup.get("id")
+
             if order_id is None and record is not None:
                 order_id = record.get("order_id")
-            if order_id is None and client_order_id:
+            if order_id is None and client_order_id and lookup is None:
                 try:
                     lookup = client.get_order_v3(client_order_id=client_order_id)
                 except Exception:
                     lookup = None
                 if isinstance(lookup, dict):
                     order_id = lookup.get("order_id") or lookup.get("id")
+
             if not order_id:
                 return OrderResult(
                     ok=False,
