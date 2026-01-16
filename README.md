@@ -1,102 +1,126 @@
-# Luno Trader App (CLI Args)
+# Luno Trader App
 
-This repo runs a multi-trader scheduler from `main.py`. Each trader has a
-portfolio stored in the local DB. The CLI lets you configure timing, models,
-accounts, and starting holdings.
+## Overview
 
-## Quick start
+-   Multi-trader, schedule-driven crypto trading system for the Luno exchange.
+-   Each trader has a local portfolio record in SQLite and runs a strategy on a schedule.
+-   Supports optional LLM models for decision support, plus a CLI for operations and reporting.
+-   This project is NOT financial advice. It is for research and educational use only.
+-   This is not a high-frequency or arbitrage bot; it targets low-frequency, strategy-driven trades.
+
+## Architecture
+
+Scheduler -> Trader -> (Optional Researcher) -> Execution
+
+-   Scheduler: Triggers each trader on its own interval, adds jitter, and enforces per-run timeouts.
+-   Trader: Loads its strategy and portfolio, then decides trades (optionally with LLM assistance).
+-   Optional Researcher: Gathers market context via tooling; not required for execution.
+-   Execution: Places orders via the Luno API in live mode or simulates in dry_run mode.
+-   Risk checks are not a standalone component; basic safeguards live in account helpers and scheduler settings.
+
+## Safety & Risk Controls
+
+-   Default mode is dry_run; no real orders are sent unless you pass `--live`.
+-   Per-trader timeouts and scheduler jitter reduce runaway or synchronized behavior.
+-   Order sizing relies on available balances and helper sizing functions, not a formal risk model.
+-   There is no built-in stop-loss, portfolio-level exposure limit, backtest engine, or slippage model.
+-   LLM-driven decisions are probabilistic; you must review logs and outcomes.
+-   Start with small balances, and only move to live trading after careful testing.
+
+## Installation
+
+-   Python 3.10+ is required.
 
 ```bash
-python main.py
+python -m venv .venv
+.venv\Scripts\Activate.ps1
+pip install -r requirements.txt
 ```
 
-## Environment
+Copy `.env.example` to `.env` and fill in values:
 
-- `LUNO_API_KEY` / `LUNO_API_SECRET` for live trading.
-- `LUNO_ADMIN_KEY` / `LUNO_ADMIN_SECRET` for admin account actions.
+-   `LUNO_API_KEY` / `LUNO_API_SECRET`: Required for market access and live orders.
+-   `LUNO_ADMIN_KEY` / `LUNO_ADMIN_SECRET`: Required only for MYR distribution.
+-   `LOG_LEVEL`, `LOG_DIR`, `RUN_EVERY_N_MINUTES`, `TRADER_TIMEOUT_SECONDS`: Scheduler settings.
+-   `MODEL_DEFAULT`, `MODEL_1`, `MODEL_2`: Optional model selection overrides.
+-   `OPENAI_API_KEY`, `DEEPSEEK_API_KEY`, `BRAVE_SEARCH_API`: Optional tool and LLM integrations.
 
-## Common examples
+Note: `RUN_MODE` is not currently used; use `--live` to enable live trading.
 
-Run two traders every 5 and 30 minutes:
+## Quick Start
+
+Single trader, dry_run, one cycle:
+
+```bash
+python main.py --names Warren --once
+```
+
+Multiple traders on different schedules:
+
 ```bash
 python main.py --names Warren,George --run-every 5,30
 ```
 
-Show current trader portfolios:
+Dry-run mode is the default; avoid `--live` while testing:
+
 ```bash
-python main.py --show-portfolio
-```
-If you omit `--names`, it prints every account stored in the DB.
-Filter by mode:
-```bash
-python main.py --show-portfolio --live-only
-python main.py --show-portfolio --dry-run-only
-```
-Show balances from Luno (all accounts):
-```bash
-python main.py --show-luno-balances
+python main.py --names Warren --run-every 15
 ```
 
-Set per-trader holdings (order matches `--names`):
-```bash
-python main.py --names Warren,George --holdings "XBT:0.1,ETH:2;XBT:0.05"
-```
+## Configuration
 
-Set per-trader strategies (registry keys or text):
-```bash
-python main.py --names Warren,George --strategies warren,george
-```
+Key CLI flags:
 
-Use one holdings group for all traders:
-```bash
-python main.py --holdings "ETH:1.5"
-```
+-   `--names`: Trader account names (comma-separated).
+-   `--run-every`: Minutes per trader (aligned with `--names`).
+-   `--strategies`: Strategy keys or text aligned with `--names`.
+-   `--models`, `--model-default`, `--many-models`: Model selection for LLM-assisted runs.
+-   `--once`: Run one cycle then exit.
+-   `--live`: Enable live trading (default is dry_run).
+-   `--holdings`: Initialize per-trader portfolio holdings.
+-   `--myr-balances`: Admin reset and distribute MYR across trader accounts.
+-   `--show-portfolio`, `--show-luno-balances`: Reporting helpers.
 
-Admin: reset MYR accounts to MYR_0 and distribute to MYR_1..:
-```bash
-python main.py --myr-balances 20,10,3.5
-```
+Holdings format:
 
-## CLI arguments
-
-- `--run-every`: Comma-separated minutes per trader (aligned with `--names`).
-- `--many-models`: Use different models per trader (env `USE_MANY_MODELS`).
-- `--model-default`: Override `MODEL_DEFAULT` for all traders.
-- `--models`: Comma-separated model names aligned with `--names`.
-- `--once`: Run one cycle then exit.
-- `--names`: Comma-separated trader names (default: `Warren,George`).
-- `--strategies`: Comma-separated strategy keys or text aligned with `--names`.
-- `--log-level`: Override `LOG_LEVEL` (DEBUG/INFO/...).
-- `--timeout-seconds`: Per-trader timeout override.
-- `--live`: Use live trading mode (sends orders to Luno).
-- `--myr-balances`: Admin reset + distribute MYR balances to `MYR_1..MYR_9`.
-- `--holdings`: Per-trader portfolio holdings.
-- `--show-portfolio`: Print trader balances/holdings from DB and exit.
-- `--show-luno-balances`: Print balances from `client.get_balances()` and exit.
-- `--live-only`: Filter `--show-portfolio` to live accounts.
-- `--dry-run-only`: Filter `--show-portfolio` to dry_run accounts.
-
-### Holdings format
-
-- Use `ASSET:QTY` pairs, separated by commas.
-- Use `;` to separate traders.
-- If you provide one group, it applies to all traders.
+-   `ASSET:QTY` pairs, comma-separated.
+-   Use `;` to separate traders (aligned with `--names`).
+-   A single group applies to all traders.
 
 Example:
+
 ```
 XBT:0.1,ETH:2;XBT:0.05
 ```
 
-### Strategy defaults
+MYR capital distribution (conceptual):
 
-If a trader has no strategy set, the app applies a default based on name:
-`warren`, `george`, `ray`, `cathie` (from `app/libs/strategy.py`).
+-   Use `--myr-balances` with admin credentials to consolidate funds into `MYR_0`,
+    then distribute amounts to `MYR_1..MYR_n`.
+-   Trader accounts are assigned to MYR sub-accounts for spending; this command exits
+    after completion and does not start the scheduler.
 
-### Admin MYR balances
+## Project Status
 
-`--myr-balances` uses the admin API key to:
-1) Rename the unnamed MYR account to `MYR_0`.
-2) Move all MYR balances into `MYR_0`.
-3) Distribute amounts to `MYR_1..MYR_n`.
+-   Experimental and evolving; APIs, prompts, and defaults may change.
+-   Risk controls are minimal and not audited.
+-   LLM prompting and execution behavior can drift with model updates.
+-   Not production-ready; test with small balances and monitor closely.
 
-This command exits after completion and does not start the scheduler.
+## Contributing
+
+-   Add or tweak strategies in `app/libs/strategy.py` and register them in `STRATEGY_REGISTRY`.
+-   Add risk checks or guardrails in `app/libs/account.py`, or add a new guard layer in `app/libs/traders.py`.
+-   Execution logic lives in `app/libs/account.py` and the Luno client wrapper in `app/libs/client.py`.
+-   Small, focused PRs are welcome; include tests or examples when possible.
+
+## Disclaimer
+
+This software is provided as-is for research and educational use only. It does not
+constitute financial advice and is not suitable for most users. You are solely
+responsible for any trades placed and any losses incurred. Trading cryptocurrencies
+involves substantial risk and can result in total loss of capital.
+
+## License
+
+This project is licensed under the MIT License.
