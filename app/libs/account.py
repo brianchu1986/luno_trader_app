@@ -1305,6 +1305,24 @@ class Account(BaseModel):
                 suggestion=str(e),
             )
 
+        from app.libs.risk_guard import assess_trade
+
+        decision = assess_trade(
+            self.name,
+            m,
+            "BUY",
+            float(quantity),
+            order_type="MARKET",
+        )
+        if not decision.ok:
+            return TradeResult(
+                ok=False,
+                action="BUY",
+                market_id=m,
+                reason=decision.reason or "RISK_GUARD_BLOCKED",
+                suggestion=decision.suggestion,
+            )
+
         client = get_luno_client()
         ticker = client.get_ticker(pair=m)
         ask = float(ticker["ask"])
@@ -1476,6 +1494,24 @@ class Account(BaseModel):
                 suggestion=str(e),
             )
 
+        from app.libs.risk_guard import assess_trade
+
+        decision = assess_trade(
+            self.name,
+            m,
+            "SELL",
+            float(quantity),
+            order_type="MARKET",
+        )
+        if not decision.ok:
+            return TradeResult(
+                ok=False,
+                action="SELL",
+                market_id=m,
+                reason=decision.reason or "RISK_GUARD_BLOCKED",
+                suggestion=decision.suggestion,
+            )
+
         client = get_luno_client()
         ticker = client.get_ticker(pair=m)
         ask = float(ticker["ask"])
@@ -1643,6 +1679,25 @@ class Account(BaseModel):
                 market_id=m,
                 reason="INVALID_QTY_RULES",
                 suggestion=str(exc),
+            )
+
+        from app.libs.risk_guard import assess_trade
+
+        decision = assess_trade(
+            self.name,
+            m,
+            side_norm,
+            float(volume),
+            order_type="LIMIT",
+            limit_price=float(price),
+        )
+        if not decision.ok:
+            return OrderResult(
+                ok=False,
+                action="POST_LIMIT",
+                market_id=m,
+                reason=decision.reason or "RISK_GUARD_BLOCKED",
+                suggestion=decision.suggestion,
             )
 
         if side_norm == "BUY":

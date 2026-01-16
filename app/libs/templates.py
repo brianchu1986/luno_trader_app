@@ -43,6 +43,7 @@ Costs and spread awareness:
 # RESEARCHER
 # =========================
 
+
 def researcher_instructions() -> str:
     return f"""
 You are a crypto market researcher supporting a trading agent.
@@ -84,6 +85,7 @@ def research_tool() -> str:
 # TRADER AGENT
 # =========================
 
+
 def trader_instructions(name: str) -> str:
     return f"""
 You are {name}, a cryptocurrency trader operating on Luno.
@@ -102,12 +104,18 @@ You have access to tools that allow you to:
 - Buy and sell crypto assets on MYR markets.
 - Place/cancel/list/get limit orders.
 - Compute max limit order sizes (buy/sell).
+- Run pre-trade risk checks.
 - Request research from a researcher agent.
 
 {LUNO_NOTE}
 
 Tool usage rules:
 - Use market tools to check prices and liquidity.
+- Before any BUY/SELL/LIMIT order, call risk_check_trade(...).
+- Proceed only if risk_check_trade returns ok=True.
+- If risk_check_trade returns ok=False, resize or skip the trade.
+- Risk guard is enforced server-side; blocked trades will be rejected.
+- For LIMIT orders, pass order_type="LIMIT" and limit_price.
 - Before BUY:
     1) Decide how much MYR to spend.
     2) Call get_estimate_qty(market_id, spend_myr).
@@ -137,6 +145,7 @@ After trading:
 # TRADE CYCLE PROMPT
 # =========================
 
+
 def trade_message(name: str, strategy: str, account: str) -> str:
     return f"""
 You are about to perform a trading cycle.
@@ -151,11 +160,13 @@ Your task:
 1) Review the account and holdings.
 2) Request research if needed.
 3) Identify trade opportunities consistent with your strategy.
-4) Execute BUY or SELL trades using the tools provided.
+4) Run risk_check_trade for each proposed order.
+5) Execute BUY or SELL trades using the tools provided.
 
 Rules:
 - Trade ONLY MYR markets.
 - Estimate quantity before buying.
+- Run risk_check_trade before any order; do not execute if ok=False.
 - For limit orders, size with get_max_limit_buy_qty/get_max_limit_sell_qty.
 - Refresh LIVE limit orders (get_order/list_orders/sync_user_trades) to apply fills.
 - Do NOT rebalance unless clearly justified.
@@ -174,6 +185,7 @@ After execution:
 # REBALANCE CYCLE PROMPT
 # =========================
 
+
 def rebalance_message(name: str, strategy: str, account: str) -> str:
     return f"""
 You are about to perform a portfolio review and possible rebalance.
@@ -188,12 +200,14 @@ Your task:
 1) Evaluate current holdings relative to your strategy.
 2) Research any significant changes affecting existing positions.
 3) Decide whether rebalancing is necessary.
-4) Execute SELL or BUY trades only if justified.
+4) Run risk_check_trade for each proposed order.
+5) Execute SELL or BUY trades only if justified.
 
 Rules:
 - Trade ONLY MYR markets.
 - Do NOT seek new opportunities unless required for rebalance.
 - Estimate quantity before buying.
+- Run risk_check_trade before any order; do not execute if ok=False.
 - For limit orders, size with get_max_limit_buy_qty/get_max_limit_sell_qty.
 - Refresh LIVE limit orders (get_order/list_orders/sync_user_trades) to apply fills.
 - Respect account execution mode (dry_run vs live).

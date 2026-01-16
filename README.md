@@ -10,17 +10,19 @@
 
 ## Architecture
 
-Scheduler -> Trader -> (Optional Researcher) -> Execution
+Scheduler -> Trader -> (Optional Researcher) -> Risk Guard -> Execution
 
 -   Scheduler: Triggers each trader on its own interval, adds jitter, and enforces per-run timeouts.
 -   Trader: Loads its strategy and portfolio, then decides trades (optionally with LLM assistance).
 -   Optional Researcher: Gathers market context via tooling; not required for execution.
+-   Risk Guard: Rule-based gate that validates trade intents (size, exposure, cooldown) before execution.
 -   Execution: Places orders via the Luno API in live mode or simulates in dry_run mode.
--   Risk checks are not a standalone component; basic safeguards live in account helpers and scheduler settings.
+-   Basic safeguards still live in account helpers and scheduler settings.
 
 ## Safety & Risk Controls
 
 -   Default mode is dry_run; no real orders are sent unless you pass `--live`.
+-   A Risk Guard tool can gate orders with size, exposure, and cooldown rules.
 -   Per-trader timeouts and scheduler jitter reduce runaway or synchronized behavior.
 -   Order sizing relies on available balances and helper sizing functions, not a formal risk model.
 -   There is no built-in stop-loss, portfolio-level exposure limit, backtest engine, or slippage model.
@@ -44,6 +46,8 @@ Copy `.env.example` to `.env` and fill in values:
 -   `LOG_LEVEL`, `LOG_DIR`, `RUN_EVERY_N_MINUTES`, `TRADER_TIMEOUT_SECONDS`, `TRADER_MAX_TURNS`: Scheduler settings.
 -   `MODEL_DEFAULT`, `MODEL_1`, `MODEL_2`: Optional model selection overrides.
 -   `OPENAI_API_KEY`, `DEEPSEEK_API_KEY`, `BRAVE_SEARCH_API`: Optional tool and LLM integrations.
+-   `RISK_MAX_TRADE_PCT`, `RISK_MAX_POSITION_PCT`, `RISK_MIN_MYR_BALANCE`, `RISK_MAX_NOTIONAL_MYR`,
+    `RISK_MAX_BUYS_24H`, `RISK_TRADE_COOLDOWN_MINUTES`: Risk guard thresholds.
 
 Note: `RUN_MODE` is not currently used; use `--live` to enable live trading.
 
@@ -118,7 +122,8 @@ MYR capital distribution (conceptual):
 ## Contributing
 
 -   Add or tweak strategies in `app/libs/strategy.py` and register them in `STRATEGY_REGISTRY`.
--   Add risk checks or guardrails in `app/libs/account.py`, or add a new guard layer in `app/libs/traders.py`.
+-   Add or tweak risk rules in `app/libs/risk_guard.py` and `app/mcp_servers/risk_server.py`.
+-   For hard gating, add risk checks in `app/libs/account.py` or a guard layer in `app/libs/traders.py`.
 -   Execution logic lives in `app/libs/account.py` and the Luno client wrapper in `app/libs/client.py`.
 -   Small, focused PRs are welcome; include tests or examples when possible.
 

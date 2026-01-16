@@ -58,6 +58,10 @@ trader_mcp_server_params = [
         "command": "uv",
         "args": ["run", "-m", "app.mcp_servers.market_server"],
     },
+    {
+        "command": "uv",
+        "args": ["run", "-m", "app.mcp_servers.risk_server"],
+    },
 ]
 
 if luno_env:
