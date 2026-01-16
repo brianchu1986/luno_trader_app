@@ -9,6 +9,7 @@ from dotenv import load_dotenv
 from openai import AsyncOpenAI
 
 from agents import Agent, Tool, Runner, OpenAIChatCompletionsModel, trace
+from agents.exceptions import MaxTurnsExceeded
 from agents.mcp import MCPServerStdio
 
 from app.libs.accounts_client import read_accounts_resource, read_strategy_resource
@@ -27,10 +28,6 @@ from app.mcp_servers.mcp_params import (
     researcher_mcp_server_params,
 )
 
-load_dotenv(override=True)
-
-MAX_TURNS = 30
-
 _STDIO_PARAM_KEYS = {
     "command",
     "args",
@@ -39,6 +36,21 @@ _STDIO_PARAM_KEYS = {
     "encoding",
     "encoding_error_handler",
 }
+
+load_dotenv(override=True)
+
+
+def _parse_max_turns(value, default: int = 30) -> int:
+    if value is None:
+        return default
+    try:
+        turns = int(value)
+    except (TypeError, ValueError):
+        return default
+    return turns if turns > 0 else default
+
+
+MAX_TURNS = _parse_max_turns(os.getenv("TRADER_MAX_TURNS"), default=30)
 
 
 def _parse_rate_limit_rps(value):
@@ -168,7 +180,13 @@ class Trader:
             else rebalance_message(self.name, strategy, account)
         )
 
-        await Runner.run(self.agent, prompt, max_turns=MAX_TURNS)
+        try:
+            await Runner.run(self.agent, prompt, max_turns=MAX_TURNS)
+        except MaxTurnsExceeded:
+            print(
+                f"Trader {self.name} hit max turns ({MAX_TURNS}). "
+                "Consider increasing TRADER_MAX_TURNS or tightening prompts."
+            )
 
     async def run_with_mcp_servers(self) -> None:
         """

@@ -124,6 +124,8 @@ Tool usage rules:
 - SELL only assets you actually hold.
 - Respect account mode:
     - If account_type is 'dry_run', no real orders are placed.
+- If a tool returns an error or ok=False, do not retry more than once.
+- If you cannot proceed safely, stop and summarize; do not loop.
 
 After trading:
 - Summarize actions briefly.
