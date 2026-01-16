@@ -189,6 +189,12 @@ def _is_filled_state(state: str | None) -> bool:
     return state in {"COMPLETE", "COMPLETED", "FILLED", "FILLED_FULL", "DONE"}
 
 
+def _is_terminal_order_state(state: str | None) -> bool:
+    if not state:
+        return False
+    return _is_filled_state(state) or state in {"CANCELLED", "CANCELED"}
+
+
 def _load_currency_accounts(client: Any, currency: str) -> list[dict[str, Any]]:
     res = client.get_balances()
     rows = res.get("balance", [])
@@ -485,6 +491,9 @@ class Account(BaseModel):
         orders:
             Stored live order records (market + limit).
 
+        orders_history:
+            Archived completed/canceled orders (live + paper).
+
         paper_orders:
             Stored paper order records.
 
@@ -500,6 +509,7 @@ class Account(BaseModel):
     holdings: dict[str, float]
     transactions: list[Transaction]
     orders: list[dict[str, Any]]
+    orders_history: list[dict[str, Any]]
     portfolio_value_time_series: list[tuple[str, float]]
     account_type: str  # "dry_run" or "live"
     last_run: Optional[str] = None
@@ -523,6 +533,7 @@ class Account(BaseModel):
                 "holdings": {},
                 "transactions": [],
                 "orders": [],
+                "orders_history": [],
                 "portfolio_value_time_series": [],
                 "account_type": "dry_run",
                 "last_run": None,
@@ -540,10 +551,13 @@ class Account(BaseModel):
         )
         fields.setdefault("paper_holdings", dict(fields.get("holdings", {})))
         fields.setdefault("orders", [])
+        fields.setdefault("orders_history", [])
         fields.setdefault("paper_orders", [])
         fields.setdefault("last_run", None)
         if not isinstance(fields.get("orders"), list):
             fields["orders"] = []
+        if not isinstance(fields.get("orders_history"), list):
+            fields["orders_history"] = []
         if not isinstance(fields.get("paper_orders"), list):
             fields["paper_orders"] = []
         return cls(**fields)
@@ -593,6 +607,16 @@ class Account(BaseModel):
         holdings_lines = [f"- {a}: {q}" for a, q in sorted(holdings.items())]
         holdings_text = "\n".join(holdings_lines) if holdings_lines else "- (empty)"
         cc = get_counter_currency().upper()
+        archived_count = len(self.orders_history)
+        archived_recent = self.orders_history[-3:] if archived_count else []
+        archived_text = f"{archived_count}"
+        if archived_recent:
+            recent_labels = []
+            for record in archived_recent:
+                oid = record.get("order_id") or record.get("client_order_id") or "?"
+                state = record.get("state") or "?"
+                recent_labels.append(f"{oid}:{state}")
+            archived_text = f"{archived_text} (latest: {', '.join(recent_labels)})"
 
         return (
             f"Account: **{self.name}**\n"
@@ -601,6 +625,7 @@ class Account(BaseModel):
             f"- {cc} account_id: `{self.account_id}`\n"
             f"- Holdings ({wallet_label}):\n{holdings_text}\n"
             f"- Transactions: {len(self.transactions)}\n"
+            f"- Archived orders: {archived_text}\n"
             f"- account_type: `{self.account_type}`"
         )
 
@@ -667,6 +692,33 @@ class Account(BaseModel):
         record.setdefault("applied_counter", 0.0)
         record.setdefault("filled_volume", 0.0)
         record.setdefault("filled_counter", 0.0)
+        record.setdefault("applied_trade_ids", [])
+
+    def _archive_terminal_orders(self) -> int:
+        moved = 0
+
+        def _archive_store(store: list[dict[str, Any]]) -> None:
+            nonlocal moved
+            if not store:
+                return
+            remaining = []
+            moved_here = 0
+            for record in store:
+                state = _normalize_order_state(record.get("state"))
+                if _is_terminal_order_state(state):
+                    archived = dict(record)
+                    archived["archived_at"] = _utc_now_iso()
+                    self.orders_history.append(archived)
+                    moved_here += 1
+                else:
+                    remaining.append(record)
+            if moved_here:
+                store[:] = remaining
+                moved += moved_here
+
+        _archive_store(self.orders)
+        _archive_store(self.paper_orders)
+        return moved
 
     def _apply_order_fill(
         self, record: dict[str, Any], order_data: dict[str, Any]
@@ -1353,6 +1405,7 @@ class Account(BaseModel):
             f"est_cost~{est_cost:.2f} spread={spread_pct:.2%} client_order_id={client_order_id}",
         )
 
+        self._archive_terminal_orders()
         self.save()
 
         return TradeResult(
@@ -1521,6 +1574,7 @@ class Account(BaseModel):
             f"est_proceeds~{est_proceeds:.2f} spread={spread_pct:.2%} client_order_id={client_order_id}",
         )
 
+        self._archive_terminal_orders()
         self.save()
 
         return TradeResult(
@@ -1675,6 +1729,7 @@ class Account(BaseModel):
                 f"{self.account_type.upper()} LIMIT {side_norm} {m} price={price} "
                 f"volume={volume} client_order_id={client_order_id}",
             )
+            self._archive_terminal_orders()
             self.save()
             return OrderResult(
                 ok=True,
@@ -1734,6 +1789,7 @@ class Account(BaseModel):
             f"{self.account_type.upper()} LIMIT {side_norm} {m} price={price} "
             f"volume={volume} client_order_id={client_order_id} state={state}",
         )
+        self._archive_terminal_orders()
         self.save()
         return OrderResult(
             ok=True,
@@ -1781,6 +1837,7 @@ class Account(BaseModel):
             if record is not None:
                 record["state"] = "CANCELLED"
                 record["updated_at"] = _utc_now_iso()
+            self._archive_terminal_orders()
             self.save()
             write_log(self.name, "order", f"CANCEL order_id={order_id}")
             return OrderResult(
@@ -1802,6 +1859,7 @@ class Account(BaseModel):
 
         record["state"] = "CANCELLED"
         record["updated_at"] = _utc_now_iso()
+        self._archive_terminal_orders()
         self.save()
         write_log(
             self.name,
@@ -1871,6 +1929,8 @@ class Account(BaseModel):
             if record is not None and isinstance(result, dict):
                 if self._update_order_record(record, result):
                     updated = True
+            if self._archive_terminal_orders():
+                updated = True
             if updated:
                 self.save()
             return OrderResult(
@@ -1953,6 +2013,8 @@ class Account(BaseModel):
                 if record is not None:
                     if self._update_order_record(record, order):
                         updated = True
+            if self._archive_terminal_orders():
+                updated = True
             if updated:
                 self.save()
             return OrderResult(
@@ -1989,6 +2051,194 @@ class Account(BaseModel):
             action="LIST_ORDERS",
             orders=orders,
         )
+
+    def sync_user_trades(
+        self,
+        pair: str | None = None,
+        since: int | None = None,
+        limit: int | None = None,
+    ) -> dict[str, Any]:
+        """
+        Sync filled trades using list_user_trades and apply to tracked LIMIT orders.
+        """
+        summary: dict[str, Any] = {
+            "ok": True,
+            "account": self.name,
+            "pairs": [],
+            "orders_matched": 0,
+            "trades_seen": 0,
+            "trades_applied": 0,
+            "trades_skipped": 0,
+            "errors": [],
+        }
+
+        if self.account_type != "live":
+            summary["ok"] = False
+            summary["reason"] = "DRY_RUN"
+            return summary
+
+        if pair:
+            pairs = [_normalize_market_id(pair)]
+        else:
+            pairs_set: set[str] = set()
+            for record in self.orders:
+                if str(record.get("order_type") or "").upper() != "LIMIT":
+                    continue
+                market_id = record.get("market_id")
+                if not market_id:
+                    continue
+                pairs_set.add(_normalize_market_id(str(market_id)))
+            pairs = sorted(pairs_set)
+
+        if not pairs:
+            summary["reason"] = "NO_LIMIT_ORDERS"
+            return summary
+
+        client = get_luno_client()
+        updated = False
+
+        for market_id in pairs:
+            summary["pairs"].append(market_id)
+            try:
+                res = client.list_user_trades(
+                    pair=market_id,
+                    since=since,
+                    limit=limit,
+                )
+            except Exception as exc:
+                summary["errors"].append(f"{market_id}: {exc}")
+                continue
+
+            trades = []
+            if isinstance(res, dict):
+                trades = res.get("trades") or res.get("trade") or []
+            if not isinstance(trades, list) or not trades:
+                continue
+
+            for trade in trades:
+                if not isinstance(trade, dict):
+                    continue
+                summary["trades_seen"] += 1
+
+                order_id = _extract_str_field(trade, ["order_id"])
+                if not order_id:
+                    summary["trades_skipped"] += 1
+                    continue
+
+                record = self._find_order_record(order_id=order_id)
+                if record is None:
+                    summary["trades_skipped"] += 1
+                    continue
+
+                if str(record.get("order_type") or "").upper() != "LIMIT":
+                    summary["trades_skipped"] += 1
+                    continue
+
+                self._ensure_order_tracking_fields(record)
+                summary["orders_matched"] += 1
+
+                trade_id = _extract_str_field(
+                    trade,
+                    ["id", "trade_id", "sequence", "trade_sequence"],
+                )
+                if not trade_id:
+                    timestamp = trade.get("timestamp")
+                    volume_hint = trade.get("volume") or trade.get("base")
+                    if timestamp is not None:
+                        trade_id = f"{timestamp}-{trade.get('price')}-{volume_hint}"
+
+                if trade_id:
+                    trade_id = str(trade_id)
+                    if trade_id in record.get("applied_trade_ids", []):
+                        summary["trades_skipped"] += 1
+                        continue
+
+                trade_base = _extract_float_field(
+                    trade,
+                    [
+                        "base",
+                        "base_amount",
+                        "volume",
+                        "base_volume",
+                        "filled_volume",
+                        "filled_base",
+                    ],
+                )
+                trade_counter = _extract_float_field(
+                    trade,
+                    ["counter", "counter_amount", "counter_volume", "filled_counter"],
+                )
+                price = _extract_float_field(trade, ["price"])
+
+                if trade_base is None and trade_counter is not None and price:
+                    trade_base = float(trade_counter) / float(price)
+                if trade_counter is None and trade_base is not None and price:
+                    trade_counter = float(trade_base) * float(price)
+
+                if trade_base is None or trade_base <= 0:
+                    summary["trades_skipped"] += 1
+                    continue
+
+                applied_base = float(record.get("applied_volume") or 0.0)
+                applied_counter = float(record.get("applied_counter") or 0.0)
+
+                order_data: dict[str, Any] = {
+                    "order_id": order_id,
+                    "pair": market_id,
+                    "base": applied_base + float(trade_base),
+                }
+                if trade_counter is not None:
+                    order_data["counter"] = applied_counter + float(trade_counter)
+                if price is not None:
+                    order_data["price"] = float(price)
+
+                side = _normalize_order_side(trade.get("type") or trade.get("side"))
+                if side is None:
+                    is_buy = trade.get("is_buy")
+                    if isinstance(is_buy, bool):
+                        side = "BUY" if is_buy else "SELL"
+                if side == "BUY":
+                    order_data["type"] = "BID"
+                elif side == "SELL":
+                    order_data["type"] = "ASK"
+
+                try:
+                    target_volume = float(record.get("volume") or 0.0)
+                except (TypeError, ValueError):
+                    target_volume = 0.0
+                if target_volume > 0 and order_data["base"] >= target_volume:
+                    order_data["state"] = "COMPLETE"
+                elif record.get("state"):
+                    order_data["state"] = record.get("state")
+
+                if self._apply_order_fill(record, order_data):
+                    updated = True
+                    summary["trades_applied"] += 1
+                    if trade_id:
+                        record["applied_trade_ids"].append(trade_id)
+                else:
+                    summary["trades_skipped"] += 1
+
+        if self._archive_terminal_orders():
+            updated = True
+
+        if updated:
+            for record in self.orders:
+                trade_ids = record.get("applied_trade_ids")
+                if not isinstance(trade_ids, list):
+                    continue
+                seen = set()
+                unique_ids = []
+                for tid in trade_ids:
+                    tid_str = str(tid)
+                    if tid_str in seen:
+                        continue
+                    seen.add(tid_str)
+                    unique_ids.append(tid_str)
+                record["applied_trade_ids"] = unique_ids
+            self.save()
+
+        return summary
 
     def compute_portfolio_value(self) -> float:
         """

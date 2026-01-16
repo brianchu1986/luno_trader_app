@@ -607,6 +607,27 @@ async def run_trader_safe(
     """
     cooldown_seconds = max(0, int(interval_minutes * 60)) if interval_minutes else 0
     acc = Account.get(trader.name)
+    try:
+        sync_summary = await asyncio.to_thread(acc.sync_user_trades)
+        if isinstance(sync_summary, dict):
+            if not (
+                sync_summary.get("ok") is False
+                and sync_summary.get("reason") == "DRY_RUN"
+            ):
+                trades_applied = int(sync_summary.get("trades_applied") or 0)
+                orders_matched = int(sync_summary.get("orders_matched") or 0)
+                errors = sync_summary.get("errors") or []
+                if errors:
+                    log.warning(
+                        f"{trader.name} sync_user_trades errors={len(errors)}"
+                    )
+                elif trades_applied > 0:
+                    log.info(
+                        f"{trader.name} sync_user_trades applied={trades_applied} "
+                        f"orders_matched={orders_matched}"
+                    )
+    except Exception as e:
+        log.warning(f"{trader.name} sync_user_trades failed: {e}")
     if cooldown_seconds > 0 and not force_run:
         remaining = acc.cooldown_remaining_seconds(cooldown_seconds)
         if remaining > 0:

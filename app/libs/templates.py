@@ -24,8 +24,8 @@ Limit order rules:
 - Use get_max_limit_buy_qty(market_id, price) before BUY limit orders.
 - Use get_max_limit_sell_qty(market_id) before SELL limit orders.
 - Place limit orders with post_limit_order(...).
-- After posting LIVE limit orders, call get_order(...) or list_orders(...)
-  to refresh fills (holdings update on refresh).
+- After posting LIVE limit orders, call get_order(...), list_orders(...),
+  or sync_user_trades(...) to refresh fills (holdings update on refresh).
 - client_order_id is auto-generated as "<trader>-<uuid>" for traceability.
 - Open limit orders do NOT reserve balance/holdings. Avoid overlapping orders
   that exceed available funds.
@@ -157,7 +157,7 @@ Rules:
 - Trade ONLY MYR markets.
 - Estimate quantity before buying.
 - For limit orders, size with get_max_limit_buy_qty/get_max_limit_sell_qty.
-- Refresh LIVE limit orders (get_order/list_orders) to apply fills.
+- Refresh LIVE limit orders (get_order/list_orders/sync_user_trades) to apply fills.
 - Do NOT rebalance unless clearly justified.
 - Avoid unnecessary trades.
 
@@ -195,7 +195,7 @@ Rules:
 - Do NOT seek new opportunities unless required for rebalance.
 - Estimate quantity before buying.
 - For limit orders, size with get_max_limit_buy_qty/get_max_limit_sell_qty.
-- Refresh LIVE limit orders (get_order/list_orders) to apply fills.
+- Refresh LIVE limit orders (get_order/list_orders/sync_user_trades) to apply fills.
 - Respect account execution mode (dry_run vs live).
 
 Current datetime: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}

@@ -357,6 +357,56 @@ async def list_orders(
 
 
 # ----------------------------
+# history tools
+# ----------------------------
+@mcp.tool()
+async def get_orders_history(
+    name: str,
+    limit: int | None = None,
+) -> dict[str, Any]:
+    """Fetch archived orders (completed/canceled) for a trader.
+
+    Args:
+        name: Account holder name
+        limit: Optional max number of archived orders to return (most recent first)
+    """
+    acc = Account.get(name)
+    try:
+        orders = list(acc.orders_history)
+        if limit:
+            orders = orders[-int(limit) :]
+        orders.reverse()
+        return {"count": len(acc.orders_history), "orders_history": orders}
+    except Exception as e:
+        return {"ok": False, "reason": "SERVER_ERROR", "suggestion": str(e)}
+
+
+# ----------------------------
+# trade sync tools
+# ----------------------------
+@mcp.tool()
+async def sync_user_trades(
+    name: str,
+    pair: str | None = None,
+    since: int | None = None,
+    limit: int | None = None,
+) -> dict[str, Any]:
+    """Sync filled trades using list_user_trades and update tracked limit orders.
+
+    Args:
+        name: Account holder name
+        pair: Market pair filter (e.g. XBTMYR). If omitted, uses tracked limit orders.
+        since: Filter trades on/after this timestamp (Unix milliseconds)
+        limit: Limit number of trades
+    """
+    acc = Account.get(name)
+    try:
+        return await _to_thread(acc.sync_user_trades, pair, since, limit)
+    except Exception as e:
+        return {"ok": False, "reason": "SERVER_ERROR", "suggestion": str(e)}
+
+
+# ----------------------------
 # account config tools
 # ----------------------------
 @mcp.tool()
