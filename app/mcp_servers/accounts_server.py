@@ -5,7 +5,7 @@ import asyncio
 from typing import Any
 
 from mcp.server.fastmcp import FastMCP
-from app.libs.account import Account, TradeResult
+from app.libs.account import Account, TradeResult, OrderResult, LimitSizeResult
 
 mcp = FastMCP("accounts_server")
 
@@ -19,6 +19,25 @@ def _err(action: str, e: Exception) -> str:
 
 def _trade_err(action: str, market_id: str, e: Exception) -> TradeResult:
     return TradeResult(
+        ok=False,
+        action=action,
+        market_id=market_id,
+        reason="SERVER_ERROR",
+        suggestion=str(e),
+    )
+
+
+def _order_err(action: str, e: Exception) -> OrderResult:
+    return OrderResult(
+        ok=False,
+        action=action,
+        reason="SERVER_ERROR",
+        suggestion=str(e),
+    )
+
+
+def _size_err(action: str, market_id: str, e: Exception) -> LimitSizeResult:
+    return LimitSizeResult(
         ok=False,
         action=action,
         market_id=market_id,
@@ -161,6 +180,41 @@ async def get_estimate_qty(name: str, market_id: str, spend_myr: float) -> Trade
 
 
 @mcp.tool()
+async def get_max_limit_buy_qty(
+    name: str, market_id: str, price: float
+) -> LimitSizeResult:
+    """Compute max BUY limit quantity based on available MYR balance.
+
+    Args:
+        name: Account holder name
+        market_id: Luno market id (e.g. GRTMYR, XBTMYR)
+        price: Limit price
+    """
+    acc = Account.get(name)
+    try:
+        return await _to_thread(acc.get_max_limit_buy_qty, market_id, price)
+    except Exception as e:
+        return _size_err("MAX_LIMIT_BUY_QTY", market_id, e)
+
+
+@mcp.tool()
+async def get_max_limit_sell_qty(
+    name: str, market_id: str
+) -> LimitSizeResult:
+    """Compute max SELL limit quantity based on available holdings.
+
+    Args:
+        name: Account holder name
+        market_id: Luno market id (e.g. GRTMYR, XBTMYR)
+    """
+    acc = Account.get(name)
+    try:
+        return await _to_thread(acc.get_max_limit_sell_qty, market_id)
+    except Exception as e:
+        return _size_err("MAX_LIMIT_SELL_QTY", market_id, e)
+
+
+@mcp.tool()
 async def buy_pair(
     name: str, market_id: str, quantity: float, rationale: str
 ) -> TradeResult:
@@ -196,6 +250,109 @@ async def sell_pair(
         return await _to_thread(acc.sell_pair, market_id, quantity, rationale)
     except Exception as e:
         return _trade_err("SELL", market_id, e)
+
+
+@mcp.tool()
+async def post_limit_order(
+    name: str,
+    market_id: str,
+    side: str,
+    price: float,
+    volume: float,
+    rationale: str = "",
+    post_only: bool | None = None,
+    time_in_force: str | None = None,
+    stop_price: float | None = None,
+    stop_direction: str | None = None,
+) -> OrderResult:
+    """Place a limit order.
+
+    Args:
+        name: Account holder name
+        market_id: Luno market id (e.g. GRTMYR, XBTMYR)
+        side: BUY/SELL (or BID/ASK)
+        price: Limit price
+        volume: Base-asset quantity
+        rationale: Optional rationale for the order
+    """
+    acc = Account.get(name)
+    try:
+        return await _to_thread(
+            acc.post_limit_order,
+            market_id,
+            side,
+            price,
+            volume,
+            rationale,
+            post_only,
+            time_in_force,
+            stop_price,
+            stop_direction,
+        )
+    except Exception as e:
+        return _order_err("POST_LIMIT", e)
+
+
+@mcp.tool()
+async def cancel_order(
+    name: str, order_id: str | None = None, client_order_id: str | None = None
+) -> OrderResult:
+    """Cancel a limit order.
+
+    Args:
+        name: Account holder name
+        order_id: Luno order id
+        client_order_id: Client order id (optional)
+    """
+    acc = Account.get(name)
+    try:
+        return await _to_thread(acc.cancel_order, order_id, client_order_id)
+    except Exception as e:
+        return _order_err("CANCEL_ORDER", e)
+
+
+@mcp.tool()
+async def get_order(
+    name: str, order_id: str | None = None, client_order_id: str | None = None
+) -> OrderResult:
+    """Fetch an order by id or client_order_id.
+
+    Args:
+        name: Account holder name
+        order_id: Luno order id
+        client_order_id: Client order id
+    """
+    acc = Account.get(name)
+    try:
+        return await _to_thread(acc.get_order, order_id, client_order_id)
+    except Exception as e:
+        return _order_err("GET_ORDER", e)
+
+
+@mcp.tool()
+async def list_orders(
+    name: str,
+    created_before: int | None = None,
+    limit: int | None = None,
+    pair: str | None = None,
+    state: str | None = None,
+) -> OrderResult:
+    """List recent orders.
+
+    Args:
+        name: Account holder name
+        created_before: Unix ms timestamp filter
+        limit: Max number of orders
+        pair: Market pair filter (e.g. XBTMYR)
+        state: Filter by state (e.g. PENDING)
+    """
+    acc = Account.get(name)
+    try:
+        return await _to_thread(
+            acc.list_orders, created_before, limit, pair, state
+        )
+    except Exception as e:
+        return _order_err("LIST_ORDERS", e)
 
 
 # ----------------------------

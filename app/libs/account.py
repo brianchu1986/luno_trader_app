@@ -36,6 +36,9 @@ from app import get_luno_admin_client, get_luno_client, get_counter_currency
 from datetime import datetime, timezone
 from decimal import Decimal, ROUND_DOWN
 from typing import Any, Optional, Literal
+from uuid import uuid4
+
+import re
 
 import pandas as pd
 
@@ -47,6 +50,13 @@ MYR_ACCOUNT_PREFIX = "MYR_"
 
 def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _ts_ms_to_iso(ts: Any) -> str | None:
+    try:
+        return datetime.fromtimestamp(float(ts) / 1000.0, tz=timezone.utc).isoformat()
+    except (TypeError, ValueError, OSError):
+        return None
 
 
 def _normalize_market_id(market_id: str) -> str:
@@ -108,6 +118,60 @@ def _get_manage_client():
 
 def _normalize_name(raw: Any) -> str:
     return str(raw or "").strip()
+
+
+def _sanitize_client_order_prefix(raw: Any) -> str:
+    text = str(raw or "").strip()
+    if not text:
+        return "trader"
+    # Luno allows alphanumeric plus _ ; , . - in client_order_id
+    sanitized = re.sub(r"[^A-Za-z0-9_.;,-]+", "_", text)
+    sanitized = sanitized.strip("_")
+    return sanitized or "trader"
+
+
+def _extract_float_field(data: dict[str, Any], keys: list[str]) -> float | None:
+    for key in keys:
+        if key not in data:
+            continue
+        value = data.get(key)
+        if value is None or value == "":
+            continue
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            continue
+    return None
+
+
+def _extract_str_field(data: dict[str, Any], keys: list[str]) -> str | None:
+    for key in keys:
+        if key not in data:
+            continue
+        value = data.get(key)
+        if value is None:
+            continue
+        text = str(value).strip()
+        if text:
+            return text
+    return None
+
+
+def _normalize_order_state(value: Any) -> str:
+    return str(value or "").strip().upper()
+
+
+def _normalize_order_side(value: Any) -> str | None:
+    side = str(value or "").strip().upper()
+    if side in {"BUY", "BID"}:
+        return "BUY"
+    if side in {"SELL", "ASK"}:
+        return "SELL"
+    return None
+
+
+def _is_filled_state(state: str | None) -> bool:
+    return state in {"COMPLETE", "COMPLETED", "FILLED", "FILLED_FULL", "DONE"}
 
 
 def _load_currency_accounts(client: Any, currency: str) -> list[dict[str, Any]]:
@@ -327,11 +391,37 @@ class TradeResult(BaseModel):
     last_trade: Optional[float] = None
     spread_pct: Optional[float] = None
     order: Optional[Any] = None
+    client_order_id: Optional[str] = None
 
     # Failure fields
     reason: Optional[str] = None
     have: Optional[float] = None
     want: Optional[float] = None
+    suggestion: Optional[str] = None
+
+
+class OrderResult(BaseModel):
+    ok: bool
+    action: Literal["POST_LIMIT", "CANCEL_ORDER", "GET_ORDER", "LIST_ORDERS"]
+    market_id: Optional[str] = None
+    order_id: Optional[str] = None
+    client_order_id: Optional[str] = None
+    order: Optional[Any] = None
+    orders: Optional[Any] = None
+    have: Optional[float] = None
+    want: Optional[float] = None
+    reason: Optional[str] = None
+    suggestion: Optional[str] = None
+
+
+class LimitSizeResult(BaseModel):
+    ok: bool
+    action: Literal["MAX_LIMIT_BUY_QTY", "MAX_LIMIT_SELL_QTY"]
+    market_id: str
+    quantity: Optional[float] = None
+    price: Optional[float] = None
+    have: Optional[float] = None
+    reason: Optional[str] = None
     suggestion: Optional[str] = None
 
 
@@ -374,6 +464,12 @@ class Account(BaseModel):
         transactions:
             History of intended trades (not guaranteed fills).
 
+        orders:
+            Stored live order records (market + limit).
+
+        paper_orders:
+            Stored paper order records.
+
     IMPORTANT:
     - Expected trade failures (insufficient balance, wide spread)
       return TradeResult(ok=False) instead of raising exceptions.
@@ -385,12 +481,14 @@ class Account(BaseModel):
     strategy: str
     holdings: dict[str, float]
     transactions: list[Transaction]
+    orders: list[dict[str, Any]]
     portfolio_value_time_series: list[tuple[str, float]]
     account_type: str  # "dry_run" or "live"
 
     # Portfolio mirror (legacy)
     paper_balance: float
     paper_holdings: dict[str, float]
+    paper_orders: list[dict[str, Any]]
 
     _market_rules_cache: dict[str, dict[str, Any]] = {}
 
@@ -405,11 +503,13 @@ class Account(BaseModel):
                 "strategy": "",
                 "holdings": {},
                 "transactions": [],
+                "orders": [],
                 "portfolio_value_time_series": [],
                 "account_type": "dry_run",
                 # paper defaults
                 "paper_balance": INITIAL_BALANCE,
                 "paper_holdings": {},
+                "paper_orders": [],
             }
             write_account(name, fields)
 
@@ -419,6 +519,12 @@ class Account(BaseModel):
             "paper_balance", float(fields.get("balance", INITIAL_BALANCE))
         )
         fields.setdefault("paper_holdings", dict(fields.get("holdings", {})))
+        fields.setdefault("orders", [])
+        fields.setdefault("paper_orders", [])
+        if not isinstance(fields.get("orders"), list):
+            fields["orders"] = []
+        if not isinstance(fields.get("paper_orders"), list):
+            fields["paper_orders"] = []
         return cls(**fields)
 
     def save(self):
@@ -493,6 +599,222 @@ class Account(BaseModel):
     def _counter_account_id(self) -> str | None:
         account_id = str(self.account_id or "").strip()
         return account_id if account_id else None
+
+    # ---------------- Order tracking helpers ----------------
+    def _make_client_order_id(self) -> str:
+        prefix = _sanitize_client_order_prefix(self.name)
+        unique = str(uuid4())
+        max_prefix_len = 255 - len(unique) - 1
+        if max_prefix_len < 1:
+            prefix = "trader"
+        else:
+            prefix = prefix[:max_prefix_len]
+        return f"{prefix}-{unique}"
+
+    def _order_store(self) -> list[dict[str, Any]]:
+        return self.orders if self.account_type == "live" else self.paper_orders
+
+    def _find_order_record(
+        self, order_id: str | None = None, client_order_id: str | None = None
+    ) -> dict[str, Any] | None:
+        if order_id is None and client_order_id is None:
+            return None
+        for record in self._order_store():
+            if order_id and str(record.get("order_id") or "").strip() == str(order_id):
+                return record
+            if client_order_id and str(record.get("client_order_id") or "").strip() == str(client_order_id):
+                return record
+        return None
+
+    def _ensure_order_tracking_fields(self, record: dict[str, Any]) -> None:
+        record.setdefault("applied_volume", 0.0)
+        record.setdefault("applied_counter", 0.0)
+        record.setdefault("filled_volume", 0.0)
+        record.setdefault("filled_counter", 0.0)
+
+    def _apply_order_fill(
+        self, record: dict[str, Any], order_data: dict[str, Any]
+    ) -> bool:
+        if not isinstance(order_data, dict):
+            return False
+
+        self._ensure_order_tracking_fields(record)
+
+        state = _normalize_order_state(
+            order_data.get("state") or order_data.get("status") or record.get("state")
+        )
+        if state:
+            record["state"] = state
+
+        side = record.get("side") or _normalize_order_side(
+            order_data.get("type") or order_data.get("side")
+        )
+        if side:
+            record["side"] = side
+
+        market_id = record.get("market_id") or _extract_str_field(
+            order_data, ["pair", "market_id"]
+        )
+        if market_id:
+            market_id = _normalize_market_id(market_id)
+            record["market_id"] = market_id
+
+        if not market_id or side not in {"BUY", "SELL"}:
+            return False
+
+        filled_base = _extract_float_field(
+            order_data, ["base", "base_amount", "filled_volume", "filled_base"]
+        )
+        if filled_base is None and _is_filled_state(state):
+            try:
+                filled_base = float(record.get("volume") or 0.0)
+            except (TypeError, ValueError):
+                filled_base = None
+
+        if filled_base is None or filled_base <= 0:
+            return False
+
+        applied_base = float(record.get("applied_volume") or 0.0)
+        delta_base = float(filled_base) - applied_base
+        if delta_base <= 0:
+            return False
+
+        filled_counter = _extract_float_field(
+            order_data, ["counter", "counter_amount", "filled_counter"]
+        )
+        applied_counter = float(record.get("applied_counter") or 0.0)
+        delta_counter = None
+        if filled_counter is not None:
+            delta_counter = float(filled_counter) - applied_counter
+            if delta_counter <= 0:
+                delta_counter = None
+
+        price = None
+        if delta_counter is not None and delta_base > 0:
+            price = delta_counter / delta_base
+        if price is None:
+            price = _extract_float_field(order_data, ["limit_price", "price"])
+        if price is None:
+            try:
+                price = float(record.get("price") or 0.0)
+            except (TypeError, ValueError):
+                price = 0.0
+
+        try:
+            base_asset = _base_asset_from_market(market_id)
+        except ValueError:
+            return False
+
+        try:
+            if side == "BUY":
+                cost = delta_counter if delta_counter is not None else delta_base * price
+                self._apply_portfolio_buy(base_asset, delta_base, float(cost))
+            else:
+                proceeds = (
+                    delta_counter if delta_counter is not None else delta_base * price
+                )
+                self._apply_portfolio_sell(base_asset, delta_base, float(proceeds))
+        except ValueError as exc:
+            write_log(
+                self.name,
+                "order",
+                f"Skipped fill apply for {record.get('order_id') or record.get('client_order_id')}: {exc}",
+            )
+            return False
+
+        record["applied_volume"] = applied_base + delta_base
+        if delta_counter is not None:
+            record["applied_counter"] = applied_counter + delta_counter
+
+        record["filled_volume"] = max(
+            float(record.get("filled_volume") or 0.0), float(filled_base)
+        )
+        if filled_counter is not None:
+            record["filled_counter"] = max(
+                float(record.get("filled_counter") or 0.0), float(filled_counter)
+            )
+
+        rationale = str(record.get("rationale") or "").strip()
+        self.transactions.append(
+            Transaction(
+                market_id=market_id,
+                side=side,
+                quantity=float(delta_base),
+                price=float(price),
+                timestamp=_utc_now_iso(),
+                rationale=rationale,
+            )
+        )
+
+        write_log(
+            self.name,
+            "trade",
+            f"{self.account_type.upper()} LIMIT {side} fill qty={delta_base} {market_id} price={price:.8f}",
+        )
+        return True
+
+    def _update_order_record(
+        self, record: dict[str, Any], order_data: dict[str, Any]
+    ) -> bool:
+        if not isinstance(order_data, dict):
+            return False
+
+        updated = False
+        self._ensure_order_tracking_fields(record)
+
+        order_id = _extract_str_field(order_data, ["order_id", "id"])
+        if order_id and record.get("order_id") != order_id:
+            record["order_id"] = order_id
+            updated = True
+
+        client_order_id = _extract_str_field(order_data, ["client_order_id"])
+        if client_order_id and record.get("client_order_id") != client_order_id:
+            record["client_order_id"] = client_order_id
+            updated = True
+
+        state = _normalize_order_state(order_data.get("state") or order_data.get("status"))
+        if state and record.get("state") != state:
+            record["state"] = state
+            updated = True
+
+        market_id = _extract_str_field(order_data, ["pair", "market_id"])
+        if market_id:
+            market_id = _normalize_market_id(market_id)
+            if record.get("market_id") != market_id:
+                record["market_id"] = market_id
+                updated = True
+
+        side = _normalize_order_side(order_data.get("type") or order_data.get("side"))
+        if side and record.get("side") != side:
+            record["side"] = side
+            updated = True
+
+        price = _extract_float_field(order_data, ["limit_price", "price"])
+        if price is not None:
+            record["price"] = float(price)
+
+        volume = _extract_float_field(order_data, ["limit_volume", "volume", "base_volume"])
+        if volume is not None:
+            record["volume"] = float(volume)
+
+        filled_base = _extract_float_field(
+            order_data, ["base", "base_amount", "filled_volume", "filled_base"]
+        )
+        if filled_base is not None:
+            record["filled_volume"] = float(filled_base)
+
+        filled_counter = _extract_float_field(
+            order_data, ["counter", "counter_amount", "filled_counter"]
+        )
+        if filled_counter is not None:
+            record["filled_counter"] = float(filled_counter)
+
+        record["updated_at"] = _utc_now_iso()
+
+        if self._apply_order_fill(record, order_data):
+            updated = True
+
+        return updated
 
     # ---------------- Market rules ----------------
     def _get_market_rules(self, market_id: str) -> dict[str, Any]:
@@ -750,6 +1072,95 @@ class Account(BaseModel):
             spread_pct=spread_pct,
         )
 
+    def get_max_limit_buy_qty(
+        self, market_id: str, price: float
+    ) -> LimitSizeResult:
+        """
+        Compute the maximum BUY limit quantity based on available MYR balance.
+        """
+        m = _assert_counter_market(market_id)
+        if price <= 0:
+            return LimitSizeResult(
+                ok=False,
+                action="MAX_LIMIT_BUY_QTY",
+                market_id=m,
+                price=price,
+                reason="INVALID_PRICE",
+                suggestion="price must be > 0",
+            )
+
+        available_ccy = self._wallet_balance()
+        if available_ccy <= 0:
+            return LimitSizeResult(
+                ok=False,
+                action="MAX_LIMIT_BUY_QTY",
+                market_id=m,
+                price=price,
+                have=available_ccy,
+                reason="INSUFFICIENT_MYR",
+                suggestion="Fund the account or reduce price",
+            )
+
+        raw_qty = available_ccy / float(price)
+        try:
+            qty = self._validate_and_round_volume(m, raw_qty)
+        except ValueError as exc:
+            return LimitSizeResult(
+                ok=False,
+                action="MAX_LIMIT_BUY_QTY",
+                market_id=m,
+                price=price,
+                have=available_ccy,
+                reason="BELOW_MIN_VOLUME",
+                suggestion=str(exc),
+            )
+
+        return LimitSizeResult(
+            ok=True,
+            action="MAX_LIMIT_BUY_QTY",
+            market_id=m,
+            quantity=qty,
+            price=price,
+            have=available_ccy,
+        )
+
+    def get_max_limit_sell_qty(self, market_id: str) -> LimitSizeResult:
+        """
+        Compute the maximum SELL limit quantity based on available holdings.
+        """
+        m = _assert_counter_market(market_id)
+        base_asset = _base_asset_from_market(m)
+        have = float(self._wallet_holdings().get(base_asset, 0.0))
+        if have <= 0:
+            return LimitSizeResult(
+                ok=False,
+                action="MAX_LIMIT_SELL_QTY",
+                market_id=m,
+                have=have,
+                reason="INSUFFICIENT_ASSET",
+                suggestion=f"No {base_asset} available to sell",
+            )
+
+        try:
+            qty = self._validate_and_round_volume(m, have)
+        except ValueError as exc:
+            return LimitSizeResult(
+                ok=False,
+                action="MAX_LIMIT_SELL_QTY",
+                market_id=m,
+                have=have,
+                reason="BELOW_MIN_VOLUME",
+                suggestion=str(exc),
+            )
+
+        return LimitSizeResult(
+            ok=True,
+            action="MAX_LIMIT_SELL_QTY",
+            market_id=m,
+            quantity=qty,
+            have=have,
+        )
+
     # ---------------- BUY / SELL ----------------
     def buy_pair(
         self,
@@ -855,6 +1266,7 @@ class Account(BaseModel):
                 suggestion="Call get_estimate_qty() with smaller spend_myr",
             )
 
+        client_order_id = self._make_client_order_id()
         order = None
         if self.account_type == "live":
             order = client.post_market_order(
@@ -862,6 +1274,7 @@ class Account(BaseModel):
                 type="BUY",
                 counter_volume=est_cost,
                 counter_account_id=self._counter_account_id(),
+                client_order_id=client_order_id,
             )
             self._apply_portfolio_buy(base_asset, quantity, est_cost)
         else:
@@ -879,11 +1292,29 @@ class Account(BaseModel):
             )
         )
 
+        order_record = {
+            "order_id": str(order.get("order_id")) if isinstance(order, dict) else None,
+            "client_order_id": client_order_id,
+            "market_id": m,
+            "side": "BUY",
+            "order_type": "MARKET",
+            "price": float(last_trade),
+            "volume": float(quantity),
+            "state": "COMPLETE",
+            "created_at": _utc_now_iso(),
+            "filled_volume": float(quantity),
+            "filled_counter": float(est_cost),
+            "applied_volume": float(quantity),
+            "applied_counter": float(est_cost),
+            "rationale": rationale,
+        }
+        self._order_store().append(order_record)
+
         write_log(
             self.name,
             "trade",
             f"{self.account_type.upper()} BUY qty={quantity} {m} ask={ask} bid={bid} "
-            f"est_cost~{est_cost:.2f} spread={spread_pct:.2%}",
+            f"est_cost~{est_cost:.2f} spread={spread_pct:.2%} client_order_id={client_order_id}",
         )
 
         self.save()
@@ -899,6 +1330,7 @@ class Account(BaseModel):
             last_trade=last_trade,
             spread_pct=spread_pct,
             order=order,
+            client_order_id=client_order_id,
         )
 
     def sell_pair(
@@ -1002,6 +1434,7 @@ class Account(BaseModel):
 
         est_proceeds = quantity * bid
 
+        client_order_id = self._make_client_order_id()
         order = None
         if self.account_type == "live":
             order = client.post_market_order(
@@ -1009,6 +1442,7 @@ class Account(BaseModel):
                 type="SELL",
                 base_volume=quantity,
                 counter_account_id=self._counter_account_id(),
+                client_order_id=client_order_id,
             )
             self._apply_portfolio_sell(base_asset, quantity, est_proceeds)
         else:
@@ -1026,11 +1460,29 @@ class Account(BaseModel):
             )
         )
 
+        order_record = {
+            "order_id": str(order.get("order_id")) if isinstance(order, dict) else None,
+            "client_order_id": client_order_id,
+            "market_id": m,
+            "side": "SELL",
+            "order_type": "MARKET",
+            "price": float(last_trade),
+            "volume": float(quantity),
+            "state": "COMPLETE",
+            "created_at": _utc_now_iso(),
+            "filled_volume": float(quantity),
+            "filled_counter": float(est_proceeds),
+            "applied_volume": float(quantity),
+            "applied_counter": float(est_proceeds),
+            "rationale": rationale,
+        }
+        self._order_store().append(order_record)
+
         write_log(
             self.name,
             "trade",
             f"{self.account_type.upper()} SELL qty={quantity} {m} bid={bid} ask={ask} "
-            f"est_proceeds~{est_proceeds:.2f} spread={spread_pct:.2%}",
+            f"est_proceeds~{est_proceeds:.2f} spread={spread_pct:.2%} client_order_id={client_order_id}",
         )
 
         self.save()
@@ -1046,6 +1498,460 @@ class Account(BaseModel):
             last_trade=last_trade,
             spread_pct=spread_pct,
             order=order,
+            client_order_id=client_order_id,
+        )
+
+    # ---------------- LIMIT ORDERS ----------------
+    def post_limit_order(
+        self,
+        market_id: str,
+        side: str,
+        price: float,
+        volume: float,
+        rationale: str = "",
+        post_only: bool | None = None,
+        time_in_force: str | None = None,
+        stop_price: float | None = None,
+        stop_direction: str | None = None,
+    ) -> OrderResult:
+        """
+        Place a LIMIT order.
+
+        Args:
+            market_id: Luno market id (e.g. XBTMYR)
+            side: BUY/SELL (or BID/ASK)
+            price: Limit price
+            volume: Base-asset quantity
+            rationale: Optional rationale for the order
+        """
+        m = _assert_counter_market(market_id)
+        side_norm = _normalize_order_side(side)
+        if side_norm is None:
+            return OrderResult(
+                ok=False,
+                action="POST_LIMIT",
+                market_id=m,
+                reason="INVALID_SIDE",
+                suggestion="side must be BUY/SELL or BID/ASK",
+            )
+
+        if price <= 0 or volume <= 0:
+            return OrderResult(
+                ok=False,
+                action="POST_LIMIT",
+                market_id=m,
+                reason="INVALID_PRICE_OR_VOLUME",
+                suggestion="price and volume must be > 0",
+            )
+
+        try:
+            volume = self._validate_and_round_volume(m, volume)
+        except ValueError as exc:
+            return OrderResult(
+                ok=False,
+                action="POST_LIMIT",
+                market_id=m,
+                reason="INVALID_QTY_RULES",
+                suggestion=str(exc),
+            )
+
+        if side_norm == "BUY":
+            est_cost = float(volume) * float(price)
+            if est_cost > self._wallet_balance():
+                return OrderResult(
+                    ok=False,
+                    action="POST_LIMIT",
+                    market_id=m,
+                    reason="INSUFFICIENT_MYR",
+                    have=self._wallet_balance(),
+                    want=est_cost,
+                    suggestion="Reduce volume or price",
+                )
+        else:
+            base_asset = _base_asset_from_market(m)
+            have = float(self._wallet_holdings().get(base_asset, 0.0))
+            if volume > have:
+                return OrderResult(
+                    ok=False,
+                    action="POST_LIMIT",
+                    market_id=m,
+                    reason="INSUFFICIENT_ASSET",
+                    have=have,
+                    want=volume,
+                    suggestion=f"Resize <= available {base_asset} ({have})",
+                )
+
+        client_order_id = self._make_client_order_id()
+        order_id = None
+        state = "PENDING"
+
+        order_record = {
+            "order_id": None,
+            "client_order_id": client_order_id,
+            "market_id": m,
+            "side": side_norm,
+            "order_type": "LIMIT",
+            "price": float(price),
+            "volume": float(volume),
+            "state": state,
+            "created_at": _utc_now_iso(),
+            "updated_at": _utc_now_iso(),
+            "applied_volume": 0.0,
+            "applied_counter": 0.0,
+            "filled_volume": 0.0,
+            "filled_counter": 0.0,
+            "rationale": rationale,
+        }
+
+        if self.account_type == "live":
+            client = get_luno_client()
+            order = client.post_limit_order(
+                pair=m,
+                price=price,
+                type="BID" if side_norm == "BUY" else "ASK",
+                volume=volume,
+                client_order_id=client_order_id,
+                counter_account_id=self._counter_account_id(),
+                post_only=post_only,
+                stop_direction=stop_direction,
+                stop_price=stop_price,
+                time_in_force=time_in_force,
+            )
+            if isinstance(order, dict):
+                order_id = order.get("order_id") or order.get("id")
+                state = _normalize_order_state(order.get("state")) or state
+
+            order_record["order_id"] = str(order_id) if order_id else None
+            order_record["state"] = state
+            self.orders.append(order_record)
+            if isinstance(order, dict):
+                self._update_order_record(order_record, order)
+            try:
+                latest = client.get_order_v3(client_order_id=client_order_id)
+            except Exception:
+                latest = None
+            if isinstance(latest, dict):
+                self._update_order_record(order_record, latest)
+
+            write_log(
+                self.name,
+                "order",
+                f"{self.account_type.upper()} LIMIT {side_norm} {m} price={price} "
+                f"volume={volume} client_order_id={client_order_id}",
+            )
+            self.save()
+            return OrderResult(
+                ok=True,
+                action="POST_LIMIT",
+                market_id=m,
+                order_id=str(order_id) if order_id else None,
+                client_order_id=client_order_id,
+                order=order,
+            )
+
+        # DRY_RUN: simulate order placement
+        order_id = f"paper-{uuid4()}"
+        order_record["order_id"] = order_id
+
+        filled = False
+        order_snapshot: dict[str, Any] = {}
+        try:
+            client = get_luno_client()
+            ticker = client.get_ticker(pair=m)
+            ask = float(ticker["ask"])
+            bid = float(ticker["bid"])
+        except Exception:
+            ask = 0.0
+            bid = 0.0
+
+        if side_norm == "BUY" and ask > 0 and price >= ask:
+            filled = True
+            exec_price = ask
+        elif side_norm == "SELL" and bid > 0 and price <= bid:
+            filled = True
+            exec_price = bid
+        else:
+            exec_price = price
+
+        if filled:
+            state = "COMPLETE"
+            counter_amount = float(volume) * float(exec_price)
+            order_snapshot = {
+                "state": state,
+                "type": "BID" if side_norm == "BUY" else "ASK",
+                "pair": m,
+                "limit_price": exec_price,
+                "limit_volume": volume,
+                "base": volume,
+                "counter": counter_amount,
+            }
+
+        order_record["state"] = state
+        self.paper_orders.append(order_record)
+
+        if filled:
+            self._apply_order_fill(order_record, order_snapshot)
+
+        write_log(
+            self.name,
+            "order",
+            f"{self.account_type.upper()} LIMIT {side_norm} {m} price={price} "
+            f"volume={volume} client_order_id={client_order_id} state={state}",
+        )
+        self.save()
+        return OrderResult(
+            ok=True,
+            action="POST_LIMIT",
+            market_id=m,
+            order_id=order_id,
+            client_order_id=client_order_id,
+            order=order_record,
+        )
+
+    def cancel_order(
+        self, order_id: str | None = None, client_order_id: str | None = None
+    ) -> OrderResult:
+        """
+        Cancel a LIMIT order.
+        """
+        if order_id is None and client_order_id is None:
+            return OrderResult(
+                ok=False,
+                action="CANCEL_ORDER",
+                reason="MISSING_ORDER_ID",
+                suggestion="Provide order_id or client_order_id",
+            )
+
+        if self.account_type == "live":
+            record = self._find_order_record(order_id=order_id, client_order_id=client_order_id)
+            client = get_luno_client()
+            if order_id is None and record is not None:
+                order_id = record.get("order_id")
+            if order_id is None and client_order_id:
+                try:
+                    lookup = client.get_order_v3(client_order_id=client_order_id)
+                except Exception:
+                    lookup = None
+                if isinstance(lookup, dict):
+                    order_id = lookup.get("order_id") or lookup.get("id")
+            if not order_id:
+                return OrderResult(
+                    ok=False,
+                    action="CANCEL_ORDER",
+                    reason="ORDER_ID_NOT_FOUND",
+                    suggestion="Provide order_id or ensure order is tracked",
+                )
+            result = client.stop_order(order_id)
+            if record is not None:
+                record["state"] = "CANCELLED"
+                record["updated_at"] = _utc_now_iso()
+            self.save()
+            write_log(self.name, "order", f"CANCEL order_id={order_id}")
+            return OrderResult(
+                ok=True,
+                action="CANCEL_ORDER",
+                order_id=str(order_id),
+                client_order_id=record.get("client_order_id") if record else None,
+                order=result,
+            )
+
+        record = self._find_order_record(order_id=order_id, client_order_id=client_order_id)
+        if record is None:
+            return OrderResult(
+                ok=False,
+                action="CANCEL_ORDER",
+                reason="ORDER_NOT_FOUND",
+                suggestion="Provide a valid order_id or client_order_id",
+            )
+
+        record["state"] = "CANCELLED"
+        record["updated_at"] = _utc_now_iso()
+        self.save()
+        write_log(
+            self.name,
+            "order",
+            f"CANCEL order_id={record.get('order_id')} client_order_id={record.get('client_order_id')}",
+        )
+        return OrderResult(
+            ok=True,
+            action="CANCEL_ORDER",
+            order_id=str(record.get("order_id") or ""),
+            client_order_id=record.get("client_order_id"),
+            order=record,
+        )
+
+    def get_order(
+        self, order_id: str | None = None, client_order_id: str | None = None
+    ) -> OrderResult:
+        """
+        Fetch an order and update holdings if it has traded.
+        """
+        if (order_id is None and client_order_id is None) or (
+            order_id is not None and client_order_id is not None
+        ):
+            return OrderResult(
+                ok=False,
+                action="GET_ORDER",
+                reason="INVALID_PARAMS",
+                suggestion="Provide exactly one of order_id or client_order_id",
+            )
+
+        if self.account_type == "live":
+            client = get_luno_client()
+            result = client.get_order_v3(
+                id=order_id,
+                client_order_id=client_order_id,
+            )
+            updated = False
+            record = self._find_order_record(order_id=order_id, client_order_id=client_order_id)
+            if record is None and isinstance(result, dict):
+                client_id = _extract_str_field(result, ["client_order_id"])
+                prefix = f"{_sanitize_client_order_prefix(self.name)}-"
+                if client_id and client_id.startswith(prefix):
+                    record = {
+                        "order_id": _extract_str_field(result, ["order_id", "id"]),
+                        "client_order_id": client_id,
+                        "market_id": _normalize_market_id(
+                            _extract_str_field(result, ["pair", "market_id"]) or ""
+                        ),
+                        "side": _normalize_order_side(
+                            result.get("type") or result.get("side")
+                        ),
+                        "order_type": "LIMIT",
+                        "price": _extract_float_field(result, ["limit_price", "price"]),
+                        "volume": _extract_float_field(result, ["limit_volume", "volume"]),
+                        "state": _normalize_order_state(result.get("state")),
+                        "created_at": _ts_ms_to_iso(result.get("creation_timestamp"))
+                        or _utc_now_iso(),
+                        "updated_at": _utc_now_iso(),
+                        "applied_volume": 0.0,
+                        "applied_counter": 0.0,
+                        "filled_volume": 0.0,
+                        "filled_counter": 0.0,
+                        "rationale": "",
+                    }
+                    self.orders.append(record)
+                    updated = True
+            if record is not None and isinstance(result, dict):
+                if self._update_order_record(record, result):
+                    updated = True
+            if updated:
+                self.save()
+            return OrderResult(
+                ok=True,
+                action="GET_ORDER",
+                order_id=order_id,
+                client_order_id=client_order_id,
+                order=result,
+            )
+
+        record = self._find_order_record(order_id=order_id, client_order_id=client_order_id)
+        if record is None:
+            return OrderResult(
+                ok=False,
+                action="GET_ORDER",
+                reason="ORDER_NOT_FOUND",
+                suggestion="Provide a valid order_id or client_order_id",
+            )
+        return OrderResult(
+            ok=True,
+            action="GET_ORDER",
+            order_id=str(record.get("order_id") or ""),
+            client_order_id=record.get("client_order_id"),
+            order=record,
+        )
+
+    def list_orders(
+        self,
+        created_before: int | None = None,
+        limit: int | None = None,
+        pair: str | None = None,
+        state: str | None = None,
+    ) -> OrderResult:
+        """
+        List recent orders and update holdings for any filled orders.
+        """
+        if self.account_type == "live":
+            client = get_luno_client()
+            result = client.list_orders(
+                created_before=created_before,
+                limit=limit,
+                pair=pair,
+                state=state,
+            )
+            updated = False
+            orders = []
+            if isinstance(result, dict):
+                orders = result.get("orders") or result.get("order") or []
+            prefix = f"{_sanitize_client_order_prefix(self.name)}-"
+            for order in orders:
+                if not isinstance(order, dict):
+                    continue
+                order_id = _extract_str_field(order, ["order_id", "id"])
+                client_id = _extract_str_field(order, ["client_order_id"])
+                record = self._find_order_record(order_id=order_id, client_order_id=client_id)
+                if record is None and client_id and client_id.startswith(prefix):
+                    record = {
+                        "order_id": order_id,
+                        "client_order_id": client_id,
+                        "market_id": _normalize_market_id(
+                            _extract_str_field(order, ["pair", "market_id"]) or ""
+                        ),
+                        "side": _normalize_order_side(
+                            order.get("type") or order.get("side")
+                        ),
+                        "order_type": "LIMIT",
+                        "price": _extract_float_field(order, ["limit_price", "price"]),
+                        "volume": _extract_float_field(order, ["limit_volume", "volume"]),
+                        "state": _normalize_order_state(order.get("state")),
+                        "created_at": _ts_ms_to_iso(order.get("creation_timestamp"))
+                        or _utc_now_iso(),
+                        "updated_at": _utc_now_iso(),
+                        "applied_volume": 0.0,
+                        "applied_counter": 0.0,
+                        "filled_volume": 0.0,
+                        "filled_counter": 0.0,
+                        "rationale": "",
+                    }
+                    self.orders.append(record)
+                if record is not None:
+                    if self._update_order_record(record, order):
+                        updated = True
+            if updated:
+                self.save()
+            return OrderResult(
+                ok=True,
+                action="LIST_ORDERS",
+                orders=result,
+            )
+
+        # DRY_RUN: return local orders
+        orders = list(self.paper_orders)
+        if pair:
+            m = _normalize_market_id(pair)
+            orders = [o for o in orders if o.get("market_id") == m]
+        if state:
+            st = state.strip().upper()
+            orders = [o for o in orders if str(o.get("state") or "").upper() == st]
+        if created_before:
+            cutoff = _ts_ms_to_iso(created_before)
+            if cutoff:
+                cutoff_dt = datetime.fromisoformat(cutoff)
+                filtered = []
+                for o in orders:
+                    try:
+                        created_at = datetime.fromisoformat(str(o.get("created_at")))
+                    except (TypeError, ValueError):
+                        continue
+                    if created_at <= cutoff_dt:
+                        filtered.append(o)
+                orders = filtered
+        if limit:
+            orders = orders[: int(limit)]
+        return OrderResult(
+            ok=True,
+            action="LIST_ORDERS",
+            orders=orders,
         )
 
     def compute_portfolio_value(self) -> float:

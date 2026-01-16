@@ -19,6 +19,16 @@ Order sizing rule (VERY IMPORTANT):
 - You MUST estimate quantity before buying.
 - Always call get_estimate_qty(market_id, spend_myr) before buy_pair().
 - buy_pair() requires a BASE-ASSET QUANTITY, not MYR amount.
+
+Limit order rules:
+- Use get_max_limit_buy_qty(market_id, price) before BUY limit orders.
+- Use get_max_limit_sell_qty(market_id) before SELL limit orders.
+- Place limit orders with post_limit_order(...).
+- After posting LIVE limit orders, call get_order(...) or list_orders(...)
+  to refresh fills (holdings update on refresh).
+- client_order_id is auto-generated as "<trader>-<uuid>" for traceability.
+- Open limit orders do NOT reserve balance/holdings. Avoid overlapping orders
+  that exceed available funds.
 """
 
 
@@ -83,6 +93,8 @@ You have access to tools that allow you to:
 - Query crypto market prices and available MYR markets.
 - Estimate safe order quantities.
 - Buy and sell crypto assets on MYR markets.
+- Place/cancel/list/get limit orders.
+- Compute max limit order sizes (buy/sell).
 - Request research from a researcher agent.
 
 {LUNO_NOTE}
@@ -93,13 +105,22 @@ Tool usage rules:
     1) Decide how much MYR to spend.
     2) Call get_estimate_qty(market_id, spend_myr).
     3) Use the returned quantity in buy_pair().
+- For LIMIT BUY:
+    1) Pick a limit price.
+    2) Call get_max_limit_buy_qty(market_id, price).
+    3) Place post_limit_order(...).
+- For LIMIT SELL:
+    1) Call get_max_limit_sell_qty(market_id).
+    2) Place post_limit_order(...).
+- After posting LIVE limit orders, call get_order(...) or list_orders(...)
+  to refresh fills.
 - SELL only assets you actually hold.
 - Respect account mode:
     - If account_type is 'dry_run', no real orders are placed.
 
 After trading:
 - Summarize actions briefly.
-- Comment on portfolio health and outlook in 2–3 sentences.
+- Comment on portfolio health and outlook in 2-3 sentences.
 """
 
 
@@ -126,6 +147,8 @@ Your task:
 Rules:
 - Trade ONLY MYR markets.
 - Estimate quantity before buying.
+- For limit orders, size with get_max_limit_buy_qty/get_max_limit_sell_qty.
+- Refresh LIVE limit orders (get_order/list_orders) to apply fills.
 - Do NOT rebalance unless clearly justified.
 - Avoid unnecessary trades.
 
@@ -162,11 +185,13 @@ Rules:
 - Trade ONLY MYR markets.
 - Do NOT seek new opportunities unless required for rebalance.
 - Estimate quantity before buying.
+- For limit orders, size with get_max_limit_buy_qty/get_max_limit_sell_qty.
+- Refresh LIVE limit orders (get_order/list_orders) to apply fills.
 - Respect account execution mode (dry_run vs live).
 
 Current datetime: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
 
 After completion:
 - Summarize rebalancing actions.
-- Provide a short 2–3 sentence outlook on portfolio alignment with strategy.
+- Provide a short 2-3 sentence outlook on portfolio alignment with strategy.
 """
