@@ -481,6 +481,13 @@ def show_portfolios(names: List[str], mode_filter: str | None) -> None:
         print(f"(no accounts with account_type={mode_filter})")
 
 
+def _format_decimal(value: Decimal) -> str:
+    text = format(value, "f")
+    if "." in text:
+        text = text.rstrip("0").rstrip(".")
+    return text or "0"
+
+
 def show_luno_balances() -> None:
     client = get_luno_client()
     res = client.get_balances()
@@ -488,6 +495,8 @@ def show_luno_balances() -> None:
     if not isinstance(rows, list) or not rows:
         print("No balances returned from Luno.")
         return
+    counter = get_counter_currency().upper()
+    holdings_totals: dict[str, Decimal] = {}
     print("Luno balances:")
     for row in rows:
         asset = str(row.get("asset", "")).upper()
@@ -506,12 +515,23 @@ def show_luno_balances() -> None:
         available = balance - reserved
         if available < 0:
             available = Decimal("0")
+        if asset and asset != counter and available > 0:
+            holdings_totals[asset] = holdings_totals.get(asset, Decimal("0")) + available
         label = asset or "UNKNOWN"
         if name:
             label += f" ({name})"
         print(
             f"- {label}: id={account_id} balance={balance} reserved={reserved} available={available}"
         )
+    if holdings_totals:
+        holdings_parts = [
+            f"{asset}:{_format_decimal(qty)}"
+            for asset, qty in sorted(holdings_totals.items())
+        ]
+        holdings_text = ",".join(holdings_parts)
+        print(f"Total holdings (for --holdings): {holdings_text}")
+    else:
+        print("Total holdings (for --holdings): (empty)")
 
 
 def _compute_portfolio_value(

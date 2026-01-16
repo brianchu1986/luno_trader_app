@@ -270,7 +270,8 @@ async def post_limit_order(
     Args:
         name: Account holder name
         market_id: Luno market id (e.g. GRTMYR, XBTMYR)
-        side: BUY/SELL (or BID/ASK)
+        side: BID for a bid (buy) limit order; ASK for an ask (sell) limit order
+              (also accepts BUY/SELL)
         price: Limit price
         volume: Base-asset quantity
         rationale: Optional rationale for the order
