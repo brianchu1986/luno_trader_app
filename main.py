@@ -796,6 +796,11 @@ async def run_trader_safe(
         log.error(f"⏱ {trader.name} TIMEOUT after {TRADER_TIMEOUT_SECONDS}s")
     except Exception as e:
         log.exception(f"❌ {trader.name} crashed: {e}")
+    finally:
+        try:
+            await asyncio.to_thread(acc.snapshot_portfolio_value)
+        except Exception as e:
+            log.warning(f"{trader.name} snapshot failed: {e}")
 
 
     return None
