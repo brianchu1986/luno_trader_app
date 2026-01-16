@@ -27,7 +27,7 @@ Typical agent flow:
 
 from __future__ import annotations
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from dotenv import load_dotenv
 
 from app.libs.database import write_account, read_account, write_log
@@ -513,6 +513,7 @@ class Account(BaseModel):
     portfolio_value_time_series: list[tuple[str, float]]
     account_type: str  # "dry_run" or "live"
     last_run: Optional[str] = None
+    risk_limits: dict[str, Any] = Field(default_factory=dict)
 
     # Portfolio mirror (legacy)
     paper_balance: float
@@ -554,12 +555,15 @@ class Account(BaseModel):
         fields.setdefault("orders_history", [])
         fields.setdefault("paper_orders", [])
         fields.setdefault("last_run", None)
+        fields.setdefault("risk_limits", {})
         if not isinstance(fields.get("orders"), list):
             fields["orders"] = []
         if not isinstance(fields.get("orders_history"), list):
             fields["orders_history"] = []
         if not isinstance(fields.get("paper_orders"), list):
             fields["paper_orders"] = []
+        if not isinstance(fields.get("risk_limits"), dict):
+            fields["risk_limits"] = {}
         return cls(**fields)
 
     def save(self):

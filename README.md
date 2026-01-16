@@ -84,6 +84,9 @@ Key CLI flags:
 -   `--live`: Enable live trading (default is dry_run).
 -   `--holdings`: Initialize per-trader portfolio holdings.
 -   `--myr-balances`: Admin reset and distribute MYR across trader accounts.
+-   `--risk-max-trade-pct`, `--risk-max-position-pct`, `--risk-min-myr-balance`,
+    `--risk-max-notional-myr`, `--risk-max-buys-24h`, `--risk-trade-cooldown-minutes`:
+    Per-trader risk overrides aligned with `--names` (0 disables).
 -   `--show-portfolio`, `--show-luno-balances`: Reporting helpers.
 
 Holdings format:

@@ -73,6 +73,38 @@ def load_risk_config() -> dict[str, Any]:
     }
 
 
+def _apply_overrides(cfg: dict[str, Any], overrides: dict[str, Any]) -> dict[str, Any]:
+    if not overrides:
+        return cfg
+    float_keys = {
+        "max_trade_pct",
+        "max_position_pct",
+        "min_myr_balance",
+        "max_notional_myr",
+    }
+    int_keys = {"max_buys_24h", "trade_cooldown_minutes"}
+    for key, raw in overrides.items():
+        if raw is None:
+            continue
+        if key in float_keys:
+            try:
+                value = float(raw)
+            except (TypeError, ValueError):
+                continue
+            if value < 0:
+                continue
+            cfg[key] = value
+        elif key in int_keys:
+            try:
+                value = int(raw)
+            except (TypeError, ValueError):
+                continue
+            if value < 0:
+                continue
+            cfg[key] = value
+    return cfg
+
+
 def assess_trade(
     name: str,
     market_id: str,
@@ -122,6 +154,7 @@ def assess_trade(
         )
 
     acc = Account.get(name)
+    cfg = _apply_overrides(cfg, getattr(acc, "risk_limits", {}) or {})
     counter = get_counter_currency().upper()
     base_asset = m[: -len(counter)] if m.endswith(counter) else m
     holdings = acc.holdings or {}

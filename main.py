@@ -147,6 +147,38 @@ def parse_strategies_arg(raw: str | None, trader_count: int) -> List[str]:
     return parts
 
 
+def parse_numeric_arg(
+    raw: str | None,
+    trader_count: int,
+    label: str,
+    cast,
+) -> List:
+    if raw is None or trader_count <= 0:
+        return []
+    text = str(raw).strip()
+    if not text:
+        return []
+    parts = [p.strip() for p in text.split(",")]
+    if len(parts) == 1 and trader_count > 1:
+        parts = parts * trader_count
+    elif len(parts) < trader_count:
+        parts = parts + [parts[-1]] * (trader_count - len(parts))
+    elif len(parts) > trader_count:
+        raise ValueError(
+            f"Too many {label} values: {len(parts)} (traders={trader_count})"
+        )
+    values = []
+    for p in parts:
+        try:
+            value = cast(p)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"Invalid {label} value '{p}'.") from exc
+        if value < 0:
+            raise ValueError(f"{label} must be >= 0.")
+        values.append(value)
+    return values
+
+
 def resolve_strategy_entry(entry: str) -> str | None:
     text = str(entry or "").strip()
     if not text:
@@ -197,6 +229,54 @@ def parse_args() -> argparse.Namespace:
         help=(
             "Comma-separated strategy keys or text aligned with --names "
             "(e.g. warren,george). Use 'none' to clear."
+        ),
+    )
+    p.add_argument(
+        "--risk-max-trade-pct",
+        default=None,
+        help=(
+            "Per-trader max BUY size as % of MYR balance "
+            "(comma-separated, aligned with --names; 0 disables)."
+        ),
+    )
+    p.add_argument(
+        "--risk-max-position-pct",
+        default=None,
+        help=(
+            "Per-trader max single-asset exposure as % of portfolio value "
+            "(comma-separated, aligned with --names; 0 disables)."
+        ),
+    )
+    p.add_argument(
+        "--risk-min-myr-balance",
+        default=None,
+        help=(
+            "Per-trader minimum MYR cash to keep after BUYs "
+            "(comma-separated, aligned with --names; 0 disables)."
+        ),
+    )
+    p.add_argument(
+        "--risk-max-notional-myr",
+        default=None,
+        help=(
+            "Per-trader max notional MYR per trade "
+            "(comma-separated, aligned with --names; 0 disables)."
+        ),
+    )
+    p.add_argument(
+        "--risk-max-buys-24h",
+        default=None,
+        help=(
+            "Per-trader max BUY trades in the last 24h "
+            "(comma-separated, aligned with --names; 0 disables)."
+        ),
+    )
+    p.add_argument(
+        "--risk-trade-cooldown-minutes",
+        default=None,
+        help=(
+            "Per-trader cooldown (minutes) per market+side "
+            "(comma-separated, aligned with --names; 0 disables)."
         ),
     )
     p.add_argument(
@@ -413,6 +493,72 @@ def apply_default_strategies(names: List[str]) -> None:
             log.info("Default strategy applied for %s (%s).", name, key)
         except Exception as e:
             log.warning("Failed to apply default strategy for %s: %s", name, e)
+
+
+def apply_risk_limits(names: List[str], args: argparse.Namespace) -> None:
+    if not names:
+        return
+    count = len(names)
+    max_trade_pct = parse_numeric_arg(
+        args.risk_max_trade_pct, count, "risk-max-trade-pct", float
+    )
+    max_position_pct = parse_numeric_arg(
+        args.risk_max_position_pct, count, "risk-max-position-pct", float
+    )
+    min_myr_balance = parse_numeric_arg(
+        args.risk_min_myr_balance, count, "risk-min-myr-balance", float
+    )
+    max_notional_myr = parse_numeric_arg(
+        args.risk_max_notional_myr, count, "risk-max-notional-myr", float
+    )
+    max_buys_24h = parse_numeric_arg(
+        args.risk_max_buys_24h, count, "risk-max-buys-24h", int
+    )
+    trade_cooldown_minutes = parse_numeric_arg(
+        args.risk_trade_cooldown_minutes,
+        count,
+        "risk-trade-cooldown-minutes",
+        int,
+    )
+
+    if not any(
+        [
+            max_trade_pct,
+            max_position_pct,
+            min_myr_balance,
+            max_notional_myr,
+            max_buys_24h,
+            trade_cooldown_minutes,
+        ]
+    ):
+        return
+
+    for idx, name in enumerate(names):
+        updates = {}
+        if max_trade_pct:
+            updates["max_trade_pct"] = max_trade_pct[idx]
+        if max_position_pct:
+            updates["max_position_pct"] = max_position_pct[idx]
+        if min_myr_balance:
+            updates["min_myr_balance"] = min_myr_balance[idx]
+        if max_notional_myr:
+            updates["max_notional_myr"] = max_notional_myr[idx]
+        if max_buys_24h:
+            updates["max_buys_24h"] = max_buys_24h[idx]
+        if trade_cooldown_minutes:
+            updates["trade_cooldown_minutes"] = trade_cooldown_minutes[idx]
+        if not updates:
+            continue
+        try:
+            acc = Account.get(name)
+            current = dict(getattr(acc, "risk_limits", {}) or {})
+            current.update(updates)
+            acc.risk_limits = current
+            acc.save()
+            label = ", ".join(f"{k}={v}" for k, v in updates.items())
+            log.info("Risk limits set for %s: %s", name, label)
+        except Exception as e:
+            log.warning("Failed to set risk limits for %s: %s", name, e)
 
 
 def run_admin_myr_balances(raw: str, log_level: str | None) -> None:
@@ -830,6 +976,7 @@ def main() -> None:
     apply_portfolio_holdings(cfg["names"], args.holdings)
     apply_strategies(cfg["names"], args.strategies)
     apply_default_strategies(cfg["names"])
+    apply_risk_limits(cfg["names"], args)
     apply_account_type(cfg["names"], cfg["account_type"])
 
     try:
