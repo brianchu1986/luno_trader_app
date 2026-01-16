@@ -59,6 +59,21 @@ def _ts_ms_to_iso(ts: Any) -> str | None:
         return None
 
 
+def _parse_iso_datetime(value: Any) -> datetime | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    try:
+        dt = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt
+
+
 def _normalize_market_id(market_id: str) -> str:
     s = market_id.strip().upper()
     return s.replace("/", "").replace("_", "").replace("-", "")
@@ -461,6 +476,9 @@ class Account(BaseModel):
         account_type:
             Execution mode: "dry_run" or "live".
 
+        last_run:
+            Last run start time in UTC ISO format (for cooldown checks).
+
         transactions:
             History of intended trades (not guaranteed fills).
 
@@ -484,6 +502,7 @@ class Account(BaseModel):
     orders: list[dict[str, Any]]
     portfolio_value_time_series: list[tuple[str, float]]
     account_type: str  # "dry_run" or "live"
+    last_run: Optional[str] = None
 
     # Portfolio mirror (legacy)
     paper_balance: float
@@ -506,6 +525,7 @@ class Account(BaseModel):
                 "orders": [],
                 "portfolio_value_time_series": [],
                 "account_type": "dry_run",
+                "last_run": None,
                 # paper defaults
                 "paper_balance": INITIAL_BALANCE,
                 "paper_holdings": {},
@@ -521,6 +541,7 @@ class Account(BaseModel):
         fields.setdefault("paper_holdings", dict(fields.get("holdings", {})))
         fields.setdefault("orders", [])
         fields.setdefault("paper_orders", [])
+        fields.setdefault("last_run", None)
         if not isinstance(fields.get("orders"), list):
             fields["orders"] = []
         if not isinstance(fields.get("paper_orders"), list):
@@ -582,6 +603,21 @@ class Account(BaseModel):
             f"- Transactions: {len(self.transactions)}\n"
             f"- account_type: `{self.account_type}`"
         )
+
+    def cooldown_remaining_seconds(self, cooldown_seconds: float) -> float:
+        if cooldown_seconds <= 0:
+            return 0.0
+        last_run = _parse_iso_datetime(self.last_run)
+        if last_run is None:
+            return 0.0
+        now = datetime.now(timezone.utc)
+        elapsed = (now - last_run).total_seconds()
+        remaining = cooldown_seconds - elapsed
+        return remaining if remaining > 0 else 0.0
+
+    def mark_run(self) -> None:
+        self.last_run = _utc_now_iso()
+        self.save()
 
     # ---------------- Wallet selectors ----------------
     def _wallet_balance(self) -> float:

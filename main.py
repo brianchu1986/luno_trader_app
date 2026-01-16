@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import logging
+import math
 import os
 import random
 import signal
@@ -210,6 +211,11 @@ def parse_args() -> argparse.Namespace:
         help="Override per-trader timeout in seconds (env TRADER_TIMEOUT_SECONDS)",
     )
     p.add_argument(
+        "--force-run",
+        action="store_true",
+        help="Run immediately even if still within the cooldown window",
+    )
+    p.add_argument(
         "--live",
         action="store_true",
         help="Run in LIVE mode (default is dry_run)",
@@ -329,6 +335,7 @@ def resolve_config(args: argparse.Namespace) -> dict:
         "log_level": args.log_level or os.getenv("LOG_LEVEL"),
         "account_type": account_type,
         "timeout_seconds": int(timeout_seconds),
+        "force_run": bool(args.force_run),
     }
     print("config : ", config)
     return config
@@ -589,15 +596,30 @@ def create_traders(cfg: dict) -> List[Trader]:
     return traders
 
 
-async def run_trader_safe(trader: Trader) -> None:
+async def run_trader_safe(
+    trader: Trader, interval_minutes: int, force_run: bool = False
+) -> float | None:
     """
     Run trader with:
     - jitter to avoid burst
     - timeout guard to prevent hangs
+    - cooldown guard to avoid repeated runs after restart
     """
+    cooldown_seconds = max(0, int(interval_minutes * 60)) if interval_minutes else 0
+    acc = Account.get(trader.name)
+    if cooldown_seconds > 0 and not force_run:
+        remaining = acc.cooldown_remaining_seconds(cooldown_seconds)
+        if remaining > 0:
+            remaining_display = int(math.ceil(remaining))
+            log.info(
+                f"{trader.name} cooldown active ({remaining_display}s remaining)."
+            )
+            return remaining
+
     jitter = random.uniform(0, JITTER_SECONDS)
     await asyncio.sleep(jitter)
 
+    acc.mark_run()
     start = time.monotonic()
     try:
         await asyncio.wait_for(trader.run(), timeout=TRADER_TIMEOUT_SECONDS)
@@ -609,22 +631,81 @@ async def run_trader_safe(trader: Trader) -> None:
         log.exception(f"❌ {trader.name} crashed: {e}")
 
 
-async def run_trader_loop(
-    trader: Trader, interval_minutes: int, stop_event: asyncio.Event
+    return None
+
+async def _wait_with_countdown(
+    name: str, seconds: float, stop_event: asyncio.Event | None = None
+) -> bool:
+    remaining = int(max(0, math.ceil(seconds)))
+    if remaining <= 0:
+        return False
+    while remaining > 0:
+        if stop_event is not None and stop_event.is_set():
+            return True
+        if remaining >= 60:
+            label = f"{remaining // 60}m {remaining % 60}s"
+        else:
+            label = f"{remaining}s"
+        log.info(f"{name} cooldown countdown: {label} remaining")
+        step = 60 if remaining > 60 else remaining
+        if stop_event is None:
+            await asyncio.sleep(step)
+        else:
+            try:
+                await asyncio.wait_for(stop_event.wait(), timeout=step)
+                return True
+            except asyncio.TimeoutError:
+                pass
+        remaining -= step
+    return stop_event.is_set() if stop_event is not None else False
+
+
+async def _run_trader_once_with_cooldown(
+    trader: Trader, interval_minutes: int, force_run: bool
 ) -> None:
+    force_next = force_run
+    while True:
+        remaining = await run_trader_safe(trader, interval_minutes, force_next)
+        force_next = False
+        if remaining is None or remaining <= 0:
+            return
+        await _wait_with_countdown(trader.name, remaining)
+
+
+async def run_trader_loop(
+    trader: Trader,
+    interval_minutes: int,
+    stop_event: asyncio.Event,
+    force_run: bool = False,
+) -> None:
+    force_next = force_run
     while not stop_event.is_set():
-        await run_trader_safe(trader)
+        remaining = await run_trader_safe(trader, interval_minutes, force_next)
+        force_next = False
         try:
-            await asyncio.wait_for(stop_event.wait(), timeout=interval_minutes * 60)
+            if remaining is not None and remaining > 0:
+                should_stop = await _wait_with_countdown(
+                    trader.name, remaining, stop_event
+                )
+                if should_stop:
+                    return
+                continue
+            wait_seconds = max(1.0, interval_minutes * 60)
+            await asyncio.wait_for(stop_event.wait(), timeout=wait_seconds)
         except asyncio.TimeoutError:
             pass
 
 
-async def run_one_cycle(traders: List[Trader]) -> None:
+async def run_one_cycle(
+    traders: List[Trader], run_every_list: List[int], force_run: bool
+) -> None:
     log.info(f"🫀 HEARTBEAT start | traders={len(traders)} | t={utc_now()}")
 
     await asyncio.gather(
-        *[run_trader_safe(t) for t in traders],
+        *[
+            _run_trader_once_with_cooldown(t, m, force_run=force_run)
+            for t, m in zip(traders, run_every_list)
+        ],
         return_exceptions=True,
     )
 
@@ -648,6 +729,8 @@ async def scheduler_loop(cfg: dict) -> None:
     log.info(
         f"Scheduler started | jitter<={JITTER_SECONDS}s | timeout={TRADER_TIMEOUT_SECONDS}s"
     )
+    if cfg.get("force_run"):
+        log.info("Force-run enabled: initial cooldown bypassed.")
     log.info(f"Run mode: {cfg['account_type']}")
     log.info(f"Traders: {', '.join([t.name for t in traders])}")
     if run_every_list:
@@ -672,12 +755,14 @@ async def scheduler_loop(cfg: dict) -> None:
             signal.signal(sig, lambda *_: _stop())
 
     if cfg["once"]:
-        await run_one_cycle(traders)
+        await run_one_cycle(traders, run_every_list, cfg.get("force_run", False))
         log.info("Scheduler stopped.")
         return
 
     tasks = [
-        asyncio.create_task(run_trader_loop(t, m, stop_event))
+        asyncio.create_task(
+            run_trader_loop(t, m, stop_event, force_run=cfg.get("force_run", False))
+        )
         for t, m in zip(traders, run_every_list)
     ]
 
