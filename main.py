@@ -84,9 +84,20 @@ def setup_logging(level: str | None = None) -> None:
     )
     file_handler.setFormatter(formatter)
 
+    orders_file = os.path.join(log_dir, "orders.log")
+    orders_handler = RotatingFileHandler(
+        orders_file,
+        maxBytes=5 * 1024 * 1024,
+        backupCount=5,
+        encoding="utf-8",
+    )
+    orders_handler.setFormatter(formatter)
+    orders_handler.addFilter(logging.Filter("orders"))
+
     root.handlers.clear()
     root.addHandler(console)
     root.addHandler(file_handler)
+    root.addHandler(orders_handler)
 
 
 log = logging.getLogger("scheduler")

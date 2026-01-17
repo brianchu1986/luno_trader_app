@@ -127,6 +127,13 @@ def write_log(name: str, type: str, message: str) -> None:
             INSERT INTO logs (name, datetime_utc, type, message)
             VALUES (?, strftime('%Y-%m-%dT%H:%M:%fZ','now'), ?, ?)
         """, (name.lower(), type, message))
+    if type in {"order", "trade"}:
+        try:
+            logging.getLogger("orders").info(
+                "%s | %s | %s", name, type, message
+            )
+        except Exception:
+            pass
 
 
 def read_log(name: str, last_n: int = 10) -> List[Tuple[str, str, str]]:

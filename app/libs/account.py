@@ -214,6 +214,123 @@ def _is_terminal_order_state(state: str | None) -> bool:
     return _is_filled_state(state) or state in {"CANCELLED", "CANCELED"}
 
 
+def _order_key(record: dict[str, Any]) -> str | None:
+    if not isinstance(record, dict):
+        return None
+    order_id = str(record.get("order_id") or "").strip()
+    if order_id:
+        return f"id:{order_id}"
+    client_id = str(record.get("client_order_id") or "").strip()
+    if client_id:
+        return f"cid:{client_id}"
+    return None
+
+
+def _order_timestamp(record: dict[str, Any]) -> datetime | None:
+    if not isinstance(record, dict):
+        return None
+    for key in ("updated_at", "archived_at", "created_at"):
+        dt = _parse_iso_datetime(record.get(key))
+        if dt is not None:
+            return dt
+    return None
+
+
+def _merge_order_records(
+    left: dict[str, Any], right: dict[str, Any]
+) -> dict[str, Any]:
+    if not isinstance(left, dict):
+        return dict(right) if isinstance(right, dict) else {}
+    if not isinstance(right, dict):
+        return dict(left)
+
+    left_ts = _order_timestamp(left)
+    right_ts = _order_timestamp(right)
+    if left_ts and right_ts:
+        primary, secondary = (left, right) if left_ts >= right_ts else (right, left)
+    elif left_ts:
+        primary, secondary = left, right
+    elif right_ts:
+        primary, secondary = right, left
+    else:
+        primary, secondary = left, right
+
+    merged = dict(primary)
+
+    for key in ("order_id", "client_order_id", "market_id", "side", "order_type", "rationale"):
+        if not merged.get(key) and secondary.get(key):
+            merged[key] = secondary[key]
+
+    primary_state = _normalize_order_state(merged.get("state"))
+    secondary_state = _normalize_order_state(secondary.get("state"))
+    if _is_terminal_order_state(secondary_state) and not _is_terminal_order_state(primary_state):
+        merged["state"] = secondary_state
+    elif not primary_state and secondary_state:
+        merged["state"] = secondary_state
+
+    for key in ("price", "volume"):
+        try:
+            primary_val = float(merged.get(key) or 0.0)
+        except (TypeError, ValueError):
+            primary_val = 0.0
+        try:
+            secondary_val = float(secondary.get(key) or 0.0)
+        except (TypeError, ValueError):
+            secondary_val = 0.0
+        if primary_val <= 0 and secondary_val > 0:
+            merged[key] = float(secondary.get(key))
+
+    for key in ("applied_volume", "applied_counter", "filled_volume", "filled_counter"):
+        try:
+            primary_val = float(merged.get(key) or 0.0)
+        except (TypeError, ValueError):
+            primary_val = 0.0
+        try:
+            secondary_val = float(secondary.get(key) or 0.0)
+        except (TypeError, ValueError):
+            secondary_val = 0.0
+        if secondary_val > primary_val:
+            merged[key] = secondary_val
+
+    trade_ids = merged.get("applied_trade_ids") if isinstance(merged.get("applied_trade_ids"), list) else []
+    secondary_trade_ids = (
+        secondary.get("applied_trade_ids")
+        if isinstance(secondary.get("applied_trade_ids"), list)
+        else []
+    )
+    if secondary_trade_ids:
+        merged["applied_trade_ids"] = list(dict.fromkeys(trade_ids + secondary_trade_ids))
+
+    if not merged.get("archived_at") and secondary.get("archived_at"):
+        merged["archived_at"] = secondary.get("archived_at")
+
+    if left_ts or right_ts:
+        merged["updated_at"] = max(ts for ts in (left_ts, right_ts) if ts).isoformat()
+
+    return merged
+
+
+def _merge_order_list(
+    local_records: list[dict[str, Any]], stored_records: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    merged: dict[str, dict[str, Any]] = {}
+    extras: list[dict[str, Any]] = []
+
+    for record in list(stored_records or []) + list(local_records or []):
+        if not isinstance(record, dict):
+            continue
+        key = _order_key(record)
+        if not key:
+            extras.append(record)
+            continue
+        if key in merged:
+            merged[key] = _merge_order_records(merged[key], record)
+        else:
+            merged[key] = dict(record)
+
+    return list(merged.values()) + extras
+
+
 def _load_currency_accounts(client: Any, currency: str) -> list[dict[str, Any]]:
     res = client.get_balances()
     rows = res.get("balance", [])
@@ -586,6 +703,30 @@ class Account(BaseModel):
         return cls(**fields)
 
     def save(self):
+        existing = read_account(self.name.lower())
+        if isinstance(existing, dict):
+            stored_orders = existing.get("orders")
+            stored_history = existing.get("orders_history")
+            stored_paper = existing.get("paper_orders")
+            stored_orders = stored_orders if isinstance(stored_orders, list) else []
+            stored_history = stored_history if isinstance(stored_history, list) else []
+            stored_paper = stored_paper if isinstance(stored_paper, list) else []
+
+            merged_history = _merge_order_list(self.orders_history, stored_history)
+            merged_orders = _merge_order_list(self.orders, stored_orders)
+            merged_paper = _merge_order_list(self.paper_orders, stored_paper)
+
+            archived_keys = {
+                key for key in (_order_key(record) for record in merged_history) if key
+            }
+            self.orders_history = merged_history
+            self.orders = [
+                record for record in merged_orders if _order_key(record) not in archived_keys
+            ]
+            self.paper_orders = [
+                record for record in merged_paper if _order_key(record) not in archived_keys
+            ]
+
         write_account(self.name.lower(), self.model_dump())
 
     def set_account_type(self, account_type: str) -> str:
@@ -2231,6 +2372,7 @@ class Account(BaseModel):
                         "rationale": "",
                     }
                     self.orders.append(record)
+                    updated = True
                 if record is not None:
                     if self._update_order_record(record, order):
                         updated = True
