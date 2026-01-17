@@ -1493,6 +1493,12 @@ class Account(BaseModel):
 
         write_log(
             self.name,
+            "order",
+            f"{self.account_type.upper()} MARKET BUY {m} qty={quantity} ask={ask} bid={bid} "
+            f"est_cost~{est_cost:.2f} spread={spread_pct:.2%} client_order_id={client_order_id}",
+        )
+        write_log(
+            self.name,
             "trade",
             f"{self.account_type.upper()} BUY qty={quantity} {m} ask={ask} bid={bid} "
             f"est_cost~{est_cost:.2f} spread={spread_pct:.2%} client_order_id={client_order_id}",
@@ -1686,6 +1692,12 @@ class Account(BaseModel):
         }
         self._order_store().append(order_record)
 
+        write_log(
+            self.name,
+            "order",
+            f"{self.account_type.upper()} MARKET SELL {m} qty={quantity} bid={bid} ask={ask} "
+            f"est_proceeds~{est_proceeds:.2f} spread={spread_pct:.2%} client_order_id={client_order_id}",
+        )
         write_log(
             self.name,
             "trade",
