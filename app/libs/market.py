@@ -77,6 +77,55 @@ def get_market_ticker(market_id: str) -> Dict[str, Any]:
     return client.get_ticker(pair=m)
 
 
+def get_market_orderbook_top_levels(
+    market_id: str, side: str, top_n: int = 10
+) -> List[Dict[str, float]]:
+    """
+    Return top orderbook levels (by volume) from the orderbook_top snapshot.
+    """
+    m = assert_tradable_myr_market(market_id)
+    side_norm = str(side or "").strip().lower()
+    if side_norm in {"bid", "bids"}:
+        book_side = "bids"
+    elif side_norm in {"ask", "asks"}:
+        book_side = "asks"
+    else:
+        raise ValueError("side must be 'bid' or 'ask'")
+
+    try:
+        limit = int(top_n)
+    except (TypeError, ValueError):
+        raise ValueError("top_n must be an integer")
+    if limit <= 0:
+        return []
+
+    book = get_market_orderbook_top(m)
+    rows = book.get(book_side, [])
+
+    parsed: list[dict[str, float]] = []
+    for row in rows:
+        if isinstance(row, dict):
+            price = row.get("price")
+            volume = row.get("volume")
+        elif isinstance(row, (list, tuple)) and len(row) >= 2:
+            price, volume = row[0], row[1]
+        else:
+            continue
+        try:
+            parsed.append({"price": float(price), "volume": float(volume)})
+        except (TypeError, ValueError):
+            continue
+
+    parsed.sort(key=lambda item: (-item["volume"], item["price"]))
+    return parsed[:limit]
+
+
+def get_market_orderbook_top(market_id: str) -> Dict[str, Any]:
+    m = assert_tradable_myr_market(market_id)
+    client = get_luno_client()
+    return client.get_order_book(pair=m)
+
+
 def get_market_last_trade(market_id: str) -> float:
     ticker = get_market_ticker(market_id)
     return float(ticker["last_trade"])

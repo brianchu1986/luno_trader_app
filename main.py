@@ -141,9 +141,7 @@ def parse_strategies_arg(raw: str | None, trader_count: int) -> List[str]:
     elif len(parts) < trader_count:
         parts = parts + [parts[-1]] * (trader_count - len(parts))
     elif len(parts) > trader_count:
-        raise ValueError(
-            f"Too many strategies: {len(parts)} (traders={trader_count})"
-        )
+        raise ValueError(f"Too many strategies: {len(parts)} (traders={trader_count})")
     return parts
 
 
@@ -669,7 +667,9 @@ def show_luno_balances() -> None:
         if available < 0:
             available = Decimal("0")
         if asset and asset != counter and available > 0:
-            holdings_totals[asset] = holdings_totals.get(asset, Decimal("0")) + available
+            holdings_totals[asset] = (
+                holdings_totals.get(asset, Decimal("0")) + available
+            )
         label = asset or "UNKNOWN"
         if name:
             label += f" ({name})"
@@ -717,9 +717,7 @@ def _compute_portfolio_value(
 
 
 def _strategy_preview(strategy: str, max_len: int = 120) -> str:
-    parts = [
-        line.strip() for line in str(strategy or "").splitlines() if line.strip()
-    ]
+    parts = [line.strip() for line in str(strategy or "").splitlines() if line.strip()]
     text = " ".join(parts)
     if not text:
         return ""
@@ -764,9 +762,7 @@ async def run_trader_safe(
                 orders_matched = int(sync_summary.get("orders_matched") or 0)
                 errors = sync_summary.get("errors") or []
                 if errors:
-                    log.warning(
-                        f"{trader.name} sync_user_trades errors={len(errors)}"
-                    )
+                    log.warning(f"{trader.name} sync_user_trades errors={len(errors)}")
                 elif trades_applied > 0:
                     log.info(
                         f"{trader.name} sync_user_trades applied={trades_applied} "
@@ -778,9 +774,7 @@ async def run_trader_safe(
         remaining = acc.cooldown_remaining_seconds(cooldown_seconds)
         if remaining > 0:
             remaining_display = int(math.ceil(remaining))
-            log.info(
-                f"{trader.name} cooldown active ({remaining_display}s remaining)."
-            )
+            log.info(f"{trader.name} cooldown active ({remaining_display}s remaining).")
             return remaining
 
     jitter = random.uniform(0, JITTER_SECONDS)
@@ -802,8 +796,8 @@ async def run_trader_safe(
         except Exception as e:
             log.warning(f"{trader.name} snapshot failed: {e}")
 
-
     return None
+
 
 async def _wait_with_countdown(
     name: str, seconds: float, stop_event: asyncio.Event | None = None
@@ -943,7 +937,6 @@ async def scheduler_loop(cfg: dict) -> None:
         task.cancel()
     await asyncio.gather(*tasks, return_exceptions=True)
     log.info("Scheduler stopped.")
-
 
 
 def main() -> None:

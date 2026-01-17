@@ -33,6 +33,11 @@ Limit order rules:
 - For live accounts with multiple traders, SELL sizing is capped by live total
   minus other traders' allocated holdings in the DB.
 
+Orderbook & pricing tools:
+- Use get_orderbook_top_levels(market_id, side, top_n) to sample orderbook_top levels by volume.
+- For best bid/ask, compute max bid price / min ask price from the returned list; increase top_n if needed.
+- Anchor LIMIT prices near best bid/ask and visible liquidity; avoid unreachable "wish prices".
+
 Costs and spread awareness:
 - Maker (limit) fees are typically ~0% to ~0.1%.
 - Taker (market) fees are typically ~0.25%.
@@ -114,6 +119,7 @@ You have access to tools that allow you to:
 
 Tool usage rules:
 - Use market tools to check prices and liquidity.
+- Use lookup_market_price for last trade; use get_orderbook_top_levels for liquidity and LIMIT price anchors.
 - Before any BUY/SELL/LIMIT order, call risk_check_trade(...).
 - Proceed only if risk_check_trade returns ok=True.
 - If risk_check_trade returns ok=False, resize or skip the trade.
@@ -124,12 +130,15 @@ Tool usage rules:
     2) Call get_estimate_qty(market_id, spend_myr).
     3) Use the returned quantity in buy_pair().
 - For LIMIT BUY:
-    1) Pick a limit price.
-    2) Call get_max_limit_buy_qty(market_id, price).
-    3) Place post_limit_order(...).
+    1) Call get_orderbook_top_levels(market_id, "bid", top_n) (and "ask" if you need spread context).
+    2) Pick a realistic limit price near best_bid (max bid price from list), without crossing best_ask.
+    3) Call get_max_limit_buy_qty(market_id, price).
+    4) Place post_limit_order(...).
 - For LIMIT SELL:
-    1) Call get_max_limit_sell_qty(market_id).
-    2) Place post_limit_order(...).
+    1) Call get_orderbook_top_levels(market_id, "ask", top_n) (and "bid" if you need spread context).
+    2) Pick a realistic limit price near best_ask (min ask price from list), without crossing best_bid.
+    3) Call get_max_limit_sell_qty(market_id).
+    4) Place post_limit_order(...).
 - After posting LIVE limit orders, call get_order(...) or list_orders(...)
   to refresh fills.
 - SELL only assets you actually hold.
@@ -170,6 +179,7 @@ Rules:
 - Trade ONLY MYR markets.
 - Estimate quantity before buying.
 - Run risk_check_trade before any order; do not execute if ok=False.
+- For limit orders, use get_orderbook_top_levels to anchor price near best bid/ask and check liquidity.
 - For limit orders, size with get_max_limit_buy_qty/get_max_limit_sell_qty.
 - Refresh LIVE limit orders (get_order/list_orders/sync_user_trades) to apply fills.
 - Do NOT rebalance unless clearly justified.
@@ -211,6 +221,7 @@ Rules:
 - Do NOT seek new opportunities unless required for rebalance.
 - Estimate quantity before buying.
 - Run risk_check_trade before any order; do not execute if ok=False.
+- For limit orders, use get_orderbook_top_levels to anchor price near best bid/ask and check liquidity.
 - For limit orders, size with get_max_limit_buy_qty/get_max_limit_sell_qty.
 - Refresh LIVE limit orders (get_order/list_orders/sync_user_trades) to apply fills.
 - Respect account execution mode (dry_run vs live).

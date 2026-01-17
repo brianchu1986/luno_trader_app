@@ -9,6 +9,7 @@ from app.libs.market import (
     list_tradable_markets,
     get_market,
     get_market_last_trade,
+    get_market_orderbook_top_levels,
     refresh_markets_cache,
 )
 
@@ -43,6 +44,32 @@ async def lookup_market_price(market_id: str) -> float:
         market_id: the market identifier (e.g. XBTMYR, ETHMYR)
     """
     return await asyncio.to_thread(get_market_last_trade, market_id)
+
+
+@mcp.tool()
+async def get_orderbook_top_levels(
+    market_id: str, side: str, top_n: int = 10
+) -> List[Dict[str, float]]:
+    """
+    Fetch a snapshot of the largest orderbook levels (by volume) for a given MYR market.
+
+    This tool returns the most significant bid/ask price levels from the
+    orderbook_top snapshot so agents can gauge liquidity and anchor LIMIT prices
+    near meaningful size (avoid unreachable "wish prices").
+
+    Args:
+        market_id: MYR market identifier (e.g. "XBTMYR", "ETHMYR").
+        side: Orderbook side to fetch: "bid" (buyers) or "ask" (sellers).
+        top_n: Number of price levels to return (default 10).
+
+    Returns:
+        A list of order levels, each containing:
+        - price (float): order price at that level
+        - volume (float): total volume available at that level
+    """
+    return await asyncio.to_thread(
+        get_market_orderbook_top_levels, market_id, side, top_n
+    )
 
 
 @mcp.tool()
