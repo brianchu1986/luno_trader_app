@@ -1,6 +1,13 @@
 # strategy.py
 # Trading personas for Luno Agentic AI (Spot Crypto, MYR-focused)
 
+SIZING_NOTE = """
+ORDER SIZING (IMPORTANT)
+- Always call get_estimate_qty(market_id, spend_myr) before buy_pair().
+- For live accounts, get_estimate_qty refreshes the latest MYR balance.
+- If spend_myr exceeds available MYR, it caps to available and sizes off that.
+"""
+
 warren_crypto_strategy = """
 You are Warren, a conservative long-term crypto value investor.
 
@@ -432,11 +439,11 @@ STYLE
 
 
 STRATEGY_REGISTRY = {
-    "warren": warren_crypto_strategy,
-    "george": george_crypto_strategy,
-    "ray": ray_crypto_strategy,
-    "cathie": cathie_crypto_strategy,
-    "taylor": taylor_crypto_strategy,
-    "mira": mira_crypto_strategy,
-    "felix": felix_crypto_strategy,
+    "warren": warren_crypto_strategy + SIZING_NOTE,
+    "george": george_crypto_strategy + SIZING_NOTE,
+    "ray": ray_crypto_strategy + SIZING_NOTE,
+    "cathie": cathie_crypto_strategy + SIZING_NOTE,
+    "taylor": taylor_crypto_strategy + SIZING_NOTE,
+    "mira": mira_crypto_strategy + SIZING_NOTE,
+    "felix": felix_crypto_strategy + SIZING_NOTE,
 }

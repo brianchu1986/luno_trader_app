@@ -164,13 +164,15 @@ async def get_estimate_qty(name: str, market_id: str, spend_myr: float) -> Trade
     - Call this tool to convert spend_myr -> quantity that respects:
     - min_volume
     - volume_scale (rounded down)
+    - For live accounts, the tool refreshes the latest MYR balance.
+    - If spend_myr exceeds available MYR, it caps to available and sizes off that.
     - Then call buy_pair(market_id, quantity, rationale).
     - Check result.ok before using result.quantity.
 
     Args:
         name: Account holder name
         market_id: Luno market id (e.g. GRTMYR, XBTMYR)
-        spend_myr: MYR budget to spend (> 0)
+        spend_myr: MYR budget to spend (> 0). Capped to available MYR if needed.
     """
     acc = Account.get(name)
     try:

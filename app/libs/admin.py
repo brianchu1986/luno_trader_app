@@ -42,7 +42,9 @@ def reset_myr_balances(
         acct_id = str(acct.get("account_id", "")).strip()
         if not acct_id or acct_id == myr0_id:
             continue
-        available = _parse_available(acct.get("balance"), acct.get("reserved"))
+        available = _parse_available(
+            acct.get("balance"), acct.get("reserved"), acct.get("unconfirmed")
+        )
         amount = _quantize_down(available, MYR_SCALE)
         if amount <= 0:
             continue
@@ -82,7 +84,9 @@ def distribute_myr_balances(
     if not myr0_id:
         raise ValueError("MYR_0 account_id missing.")
 
-    available = _parse_available(myr0.get("balance"), myr0.get("reserved"))
+    available = _parse_available(
+        myr0.get("balance"), myr0.get("reserved"), myr0.get("unconfirmed")
+    )
     available = _quantize_down(available, MYR_SCALE)
 
     total_needed = sum(
@@ -110,7 +114,9 @@ def distribute_myr_balances(
     if not myr0_id:
         raise ValueError("MYR_0 account_id missing.")
 
-    available_after = _parse_available(myr0.get("balance"), myr0.get("reserved"))
+    available_after = _parse_available(
+        myr0.get("balance"), myr0.get("reserved"), myr0.get("unconfirmed")
+    )
     available_after = _quantize_down(available_after, MYR_SCALE)
     if total_needed > available_after:
         raise ValueError(
@@ -185,8 +191,12 @@ def _format_amount(value: Decimal) -> str:
     return format(_quantize_down(value, MYR_SCALE), "f")
 
 
-def _parse_available(balance: Any, reserved: Any) -> Decimal:
-    available = _to_decimal(balance) - _to_decimal(reserved)
+def _parse_available(balance: Any, reserved: Any, unconfirmed: Any = None) -> Decimal:
+    available = (
+        _to_decimal(balance)
+        - _to_decimal(reserved)
+        - _to_decimal(unconfirmed)
+    )
     return available if available > 0 else Decimal("0")
 
 

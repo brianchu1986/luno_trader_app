@@ -18,6 +18,8 @@ Important constraints:
 Order sizing rule (VERY IMPORTANT):
 - You MUST estimate quantity before buying.
 - Always call get_estimate_qty(market_id, spend_myr) before buy_pair().
+- get_estimate_qty(...) refreshes live MYR balance and caps spend_myr to available.
+- If spend_myr > available, use the returned quantity (sized to available).
 - buy_pair() requires a BASE-ASSET QUANTITY, not MYR amount.
 
 Limit order rules:
@@ -127,7 +129,7 @@ Tool usage rules:
 - For LIMIT orders, pass order_type="LIMIT" and limit_price.
 - Before BUY:
     1) Decide how much MYR to spend.
-    2) Call get_estimate_qty(market_id, spend_myr).
+    2) Call get_estimate_qty(market_id, spend_myr) (caps to available MYR).
     3) Use the returned quantity in buy_pair().
 - For LIMIT BUY:
     1) Call get_orderbook_top_levels(market_id, "bid", top_n) (and "ask" if you need spread context).
@@ -177,7 +179,7 @@ Your task:
 
 Rules:
 - Trade ONLY MYR markets.
-- Estimate quantity before buying.
+- Estimate quantity before buying (get_estimate_qty caps to available MYR).
 - Run risk_check_trade before any order; do not execute if ok=False.
 - For limit orders, use get_orderbook_top_levels to anchor price near best bid/ask and check liquidity.
 - For limit orders, size with get_max_limit_buy_qty/get_max_limit_sell_qty.

@@ -666,6 +666,7 @@ def show_luno_balances() -> None:
         account_id = str(row.get("account_id", "")).strip()
         balance_raw = row.get("balance") or "0"
         reserved_raw = row.get("reserved") or "0"
+        unconfirmed_raw = row.get("unconfirmed") or "0"
         try:
             balance = Decimal(str(balance_raw))
         except InvalidOperation:
@@ -674,7 +675,11 @@ def show_luno_balances() -> None:
             reserved = Decimal(str(reserved_raw))
         except InvalidOperation:
             reserved = Decimal("0")
-        available = balance - reserved
+        try:
+            unconfirmed = Decimal(str(unconfirmed_raw))
+        except InvalidOperation:
+            unconfirmed = Decimal("0")
+        available = balance - reserved - unconfirmed
         if available < 0:
             available = Decimal("0")
         if asset and asset != counter and available > 0:
@@ -685,7 +690,8 @@ def show_luno_balances() -> None:
         if name:
             label += f" ({name})"
         print(
-            f"- {label}: id={account_id} balance={balance} reserved={reserved} available={available}"
+            f"- {label}: id={account_id} balance={balance} reserved={reserved} "
+            f"unconfirmed={unconfirmed} available={available}"
         )
     if holdings_totals:
         holdings_parts = [

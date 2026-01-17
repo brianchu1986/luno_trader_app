@@ -115,13 +115,16 @@ def _quantize_down(value: Decimal, scale: int) -> Decimal:
     return value.quantize(q, rounding=ROUND_DOWN)
 
 
-def _parse_available(balance_str: Any, reserved_str: Any) -> float:
+def _parse_available(
+    balance_str: Any, reserved_str: Any, unconfirmed_str: Any | None = None
+) -> float:
     """
-    Convert Luno (balance, reserved) -> available = max(balance - reserved, 0)
+    Convert Luno balances -> available = max(balance - reserved - unconfirmed, 0)
     """
     bal = float(balance_str or 0)
     res = float(reserved_str or 0)
-    return max(bal - res, 0.0)
+    unc = float(unconfirmed_str or 0)
+    return max(bal - res - unc, 0.0)
 
 
 def _get_asset_qty(holdings: Any, asset: str) -> float:
@@ -420,7 +423,11 @@ def assign_myr_accounts_to_traders(names: list[str]) -> dict[str, Any]:
         account_id = str(account.get("account_id", "")).strip()
         if not account_id:
             raise ValueError(f"Missing account_id for {target_name}.")
-        balance = _parse_available(account.get("balance"), account.get("reserved"))
+        balance = _parse_available(
+            account.get("balance"),
+            account.get("reserved"),
+            account.get("unconfirmed"),
+        )
 
         acc = Account.get(trader_name)
         acc.account_id = account_id
@@ -540,7 +547,7 @@ class TradeResult(BaseModel):
 
     # Success fields
     quantity: Optional[float] = None  # base quantity
-    spend_myr: Optional[float] = None  # requested spend (estimate tool)
+    spend_myr: Optional[float] = None  # effective spend used (capped to available)
     est_cost: Optional[float] = None  # estimated MYR cost (buy)
     est_proceeds: Optional[float] = None  # estimated MYR proceeds (sell)
     bid: Optional[float] = None
@@ -828,8 +835,21 @@ class Account(BaseModel):
         for row in rows:
             if str(row.get("asset", "")).upper() != asset_upper:
                 continue
-            total += _parse_available(row.get("balance"), row.get("reserved"))
+            total += _parse_available(
+                row.get("balance"),
+                row.get("reserved"),
+                row.get("unconfirmed"),
+            )
         return total
+
+    def refresh_effective_myr_balance(self) -> float:
+        """
+        Refresh MYR available balance from Luno for this trader's MYR account.
+        """
+        if str(self.account_type or "").strip().lower() != "live":
+            return float(self.balance)
+        self.refresh_from_luno(sync_holdings=False)
+        return float(self.balance)
 
     def _sum_other_trader_holdings(self, asset: str) -> float:
         asset_upper = str(asset or "").strip().upper()
@@ -1156,7 +1176,7 @@ class Account(BaseModel):
         """
         Source of truth sync from Luno.
         Updates:
-        - self.balance as counter available (balance - reserved)
+        - self.balance as counter available (balance - reserved - unconfirmed)
         - self.account_id from counter row
         - self.holdings for ALL non-counter assets when sync_holdings is True
         """
@@ -1185,8 +1205,13 @@ class Account(BaseModel):
             cc_row = cc_rows
 
         self.account_id = str(cc_row["account_id"].iloc[0])
+        unconfirmed = (
+            cc_row["unconfirmed"].iloc[0] if "unconfirmed" in cc_row.columns else 0
+        )
         self.balance = _parse_available(
-            cc_row["balance"].iloc[0], cc_row["reserved"].iloc[0]
+            cc_row["balance"].iloc[0],
+            cc_row["reserved"].iloc[0],
+            unconfirmed,
         )
         self.paper_balance = float(self.balance)
 
@@ -1196,7 +1221,11 @@ class Account(BaseModel):
                 asset = str(r.get("asset", "")).upper()
                 if not asset or asset == counter:
                     continue
-                avail = _parse_available(r.get("balance"), r.get("reserved"))
+                avail = _parse_available(
+                    r.get("balance"),
+                    r.get("reserved"),
+                    r.get("unconfirmed"),
+                )
                 if avail > 0:
                     new_holdings[asset] = avail
 
@@ -1275,14 +1304,16 @@ class Account(BaseModel):
 
         How estimation works:
         - Uses current ASK price (BUY hits ask).
+        - For live accounts, refreshes the latest MYR balance from Luno.
         - Uses portfolio balance stored in DB.
+        - If spend_myr exceeds available MYR, caps spend_myr to available.
         - Applies market rules:
             - min_volume
             - volume_scale (rounded DOWN)
 
         Returns:
             TradeResult with:
-            - ok=True and quantity if tradable
+            - ok=True and quantity if tradable (spend_myr is capped to available)
             - ok=False with reason and suggestion if not
 
         Agent pattern:
@@ -1321,9 +1352,23 @@ class Account(BaseModel):
                 last_trade=last_trade,
             )
 
-        # portfolio balance stored in DB
-        available_ccy = self._wallet_balance()
-        if spend_myr > available_ccy:
+        if str(self.account_type or "").strip().lower() == "live":
+            try:
+                available_ccy = self.refresh_effective_myr_balance()
+            except Exception as exc:
+                return TradeResult(
+                    ok=False,
+                    action="ESTIMATE_BUY_QTY",
+                    market_id=m,
+                    reason="LIVE_BALANCE_ERROR",
+                    suggestion=str(exc),
+                    ask=ask,
+                    bid=bid,
+                    last_trade=last_trade,
+                )
+        else:
+            available_ccy = self._wallet_balance()
+        if available_ccy <= 0:
             return TradeResult(
                 ok=False,
                 action="ESTIMATE_BUY_QTY",
@@ -1334,10 +1379,11 @@ class Account(BaseModel):
                 ask=ask,
                 bid=bid,
                 last_trade=last_trade,
-                suggestion="Reduce spend_myr or adjust portfolio balance",
+                suggestion="Fund the account or reduce spend_myr",
             )
 
-        raw_qty = spend_myr / ask
+        effective_spend = min(spend_myr, available_ccy)
+        raw_qty = effective_spend / ask
         try:
             qty = self._validate_and_round_volume(m, raw_qty)
         except ValueError as e:
@@ -1360,7 +1406,7 @@ class Account(BaseModel):
             action="ESTIMATE_BUY_QTY",
             market_id=m,
             quantity=qty,
-            spend_myr=spend_myr,
+            spend_myr=effective_spend,
             ask=ask,
             bid=bid,
             last_trade=last_trade,
