@@ -171,6 +171,11 @@ def write_log(name: str, type: str, message: str) -> None:
             logging.getLogger("orders").info("%s | %s | %s", name, type, message)
         except Exception:
             pass
+    if type == "agent_output":
+        try:
+            logging.getLogger("agent_output").info("%s | %s | %s", name, type, message)
+        except Exception:
+            pass
 
 
 def read_log(name: str, last_n: int = 10) -> List[Tuple[str, str, str]]:
