@@ -5,14 +5,16 @@ import json
 import os
 import traceback
 from contextlib import AsyncExitStack
+from typing import Any
 from dotenv import load_dotenv
 from openai import AsyncOpenAI
 
-from agents import Agent, Tool, Runner, OpenAIChatCompletionsModel, trace
+from agents import Agent, Tool, Runner, OpenAIChatCompletionsModel, trace, get_current_trace
 from agents.exceptions import MaxTurnsExceeded
 from agents.mcp import MCPServerStdio
 
 from app.libs.accounts_client import read_accounts_resource, read_strategy_resource
+from app.libs.database import write_agent_output, write_log
 from app.libs.mcp_rate_limiter import RateLimitedMCPServerStdio, get_rate_limiter
 from app.libs.tracers import make_trace_id
 from app.libs.templates import (
@@ -138,6 +140,17 @@ def _safe_account_text(account_payload: str) -> str:
         return account_payload
 
 
+def _safe_output_text(output: Any) -> str:
+    if output is None:
+        return ""
+    if isinstance(output, str):
+        return output
+    try:
+        return json.dumps(output, ensure_ascii=False)
+    except Exception:
+        return str(output)
+
+
 class Trader:
     def __init__(
         self, name: str, lastname: str = "Trader", model_name: str = "gpt-5-mini"
@@ -181,7 +194,19 @@ class Trader:
         )
 
         try:
-            await Runner.run(self.agent, prompt, max_turns=MAX_TURNS)
+            result = await Runner.run(self.agent, prompt, max_turns=MAX_TURNS)
+            final_output = result.final_output
+            output_text = _safe_output_text(final_output)
+            current_trace = get_current_trace()
+            trace_id = current_trace.trace_id if current_trace else None
+            run_type = "trade" if self.do_trade else "rebalance"
+            write_agent_output(
+                self.name,
+                final_output,
+                trace_id=trace_id,
+                run_type=run_type,
+            )
+            write_log(self.name, "agent_output", output_text)
         except MaxTurnsExceeded:
             print(
                 f"Trader {self.name} hit max turns ({MAX_TURNS}). "

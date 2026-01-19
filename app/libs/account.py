@@ -239,9 +239,7 @@ def _order_timestamp(record: dict[str, Any]) -> datetime | None:
     return None
 
 
-def _merge_order_records(
-    left: dict[str, Any], right: dict[str, Any]
-) -> dict[str, Any]:
+def _merge_order_records(left: dict[str, Any], right: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(left, dict):
         return dict(right) if isinstance(right, dict) else {}
     if not isinstance(right, dict):
@@ -260,13 +258,22 @@ def _merge_order_records(
 
     merged = dict(primary)
 
-    for key in ("order_id", "client_order_id", "market_id", "side", "order_type", "rationale"):
+    for key in (
+        "order_id",
+        "client_order_id",
+        "market_id",
+        "side",
+        "order_type",
+        "rationale",
+    ):
         if not merged.get(key) and secondary.get(key):
             merged[key] = secondary[key]
 
     primary_state = _normalize_order_state(merged.get("state"))
     secondary_state = _normalize_order_state(secondary.get("state"))
-    if _is_terminal_order_state(secondary_state) and not _is_terminal_order_state(primary_state):
+    if _is_terminal_order_state(secondary_state) and not _is_terminal_order_state(
+        primary_state
+    ):
         merged["state"] = secondary_state
     elif not primary_state and secondary_state:
         merged["state"] = secondary_state
@@ -295,14 +302,20 @@ def _merge_order_records(
         if secondary_val > primary_val:
             merged[key] = secondary_val
 
-    trade_ids = merged.get("applied_trade_ids") if isinstance(merged.get("applied_trade_ids"), list) else []
+    trade_ids = (
+        merged.get("applied_trade_ids")
+        if isinstance(merged.get("applied_trade_ids"), list)
+        else []
+    )
     secondary_trade_ids = (
         secondary.get("applied_trade_ids")
         if isinstance(secondary.get("applied_trade_ids"), list)
         else []
     )
     if secondary_trade_ids:
-        merged["applied_trade_ids"] = list(dict.fromkeys(trade_ids + secondary_trade_ids))
+        merged["applied_trade_ids"] = list(
+            dict.fromkeys(trade_ids + secondary_trade_ids)
+        )
 
     if not merged.get("archived_at") and secondary.get("archived_at"):
         merged["archived_at"] = secondary.get("archived_at")
@@ -354,7 +367,7 @@ def _load_currency_accounts(client: Any, currency: str) -> list[dict[str, Any]]:
 
 
 def _index_accounts_by_name(
-    accounts: list[dict[str, Any]]
+    accounts: list[dict[str, Any]],
 ) -> dict[str, dict[str, Any]]:
     name_map: dict[str, dict[str, Any]] = {}
     duplicates = set()
@@ -383,7 +396,9 @@ def _ensure_named_accounts(
         return accounts, []
 
     if len(accounts) + len(missing) > 10:
-        raise ValueError("Creating accounts would exceed Luno limit of 10 per currency.")
+        raise ValueError(
+            "Creating accounts would exceed Luno limit of 10 per currency."
+        )
 
     for name in missing:
         client.create_account(currency, name)
@@ -399,16 +414,12 @@ def assign_myr_accounts_to_traders(names: list[str]) -> dict[str, Any]:
     if not names:
         return {"created_accounts": [], "assignments": [], "used_admin": False}
     if len(names) > MAX_MYR_TRADERS:
-        raise ValueError(
-            f"Too many traders: {len(names)} (max {MAX_MYR_TRADERS})"
-        )
+        raise ValueError(f"Too many traders: {len(names)} (max {MAX_MYR_TRADERS})")
 
     client, used_admin = _get_manage_client()
     currency = get_counter_currency().upper()
 
-    required_names = [
-        f"{MYR_ACCOUNT_PREFIX}{i}" for i in range(1, len(names) + 1)
-    ]
+    required_names = [f"{MYR_ACCOUNT_PREFIX}{i}" for i in range(1, len(names) + 1)]
     accounts, created_accounts = _ensure_named_accounts(
         client, currency, required_names
     )
@@ -728,10 +739,14 @@ class Account(BaseModel):
             }
             self.orders_history = merged_history
             self.orders = [
-                record for record in merged_orders if _order_key(record) not in archived_keys
+                record
+                for record in merged_orders
+                if _order_key(record) not in archived_keys
             ]
             self.paper_orders = [
-                record for record in merged_paper if _order_key(record) not in archived_keys
+                record
+                for record in merged_paper
+                if _order_key(record) not in archived_keys
             ]
 
         write_account(self.name.lower(), self.model_dump())
@@ -910,7 +925,9 @@ class Account(BaseModel):
         for record in self._order_store():
             if order_id and str(record.get("order_id") or "").strip() == str(order_id):
                 return record
-            if client_order_id and str(record.get("client_order_id") or "").strip() == str(client_order_id):
+            if client_order_id and str(
+                record.get("client_order_id") or ""
+            ).strip() == str(client_order_id):
                 return record
         return None
 
@@ -1022,7 +1039,9 @@ class Account(BaseModel):
 
         try:
             if side == "BUY":
-                cost = delta_counter if delta_counter is not None else delta_base * price
+                cost = (
+                    delta_counter if delta_counter is not None else delta_base * price
+                )
                 self._apply_portfolio_buy(base_asset, delta_base, float(cost))
             else:
                 proceeds = (
@@ -1087,7 +1106,9 @@ class Account(BaseModel):
             record["client_order_id"] = client_order_id
             updated = True
 
-        state = _normalize_order_state(order_data.get("state") or order_data.get("status"))
+        state = _normalize_order_state(
+            order_data.get("state") or order_data.get("status")
+        )
         if state and record.get("state") != state:
             record["state"] = state
             updated = True
@@ -1108,7 +1129,9 @@ class Account(BaseModel):
         if price is not None:
             record["price"] = float(price)
 
-        volume = _extract_float_field(order_data, ["limit_volume", "volume", "base_volume"])
+        volume = _extract_float_field(
+            order_data, ["limit_volume", "volume", "base_volume"]
+        )
         if volume is not None:
             record["volume"] = float(volume)
 
@@ -1193,13 +1216,9 @@ class Account(BaseModel):
 
         target_id = str(self.account_id or "").strip()
         if target_id:
-            match = cc_rows.loc[
-                cc_rows["account_id"].astype(str) == target_id
-            ]
+            match = cc_rows.loc[cc_rows["account_id"].astype(str) == target_id]
             if match.empty:
-                raise ValueError(
-                    f"{counter} account_id not found: {target_id}"
-                )
+                raise ValueError(f"{counter} account_id not found: {target_id}")
             cc_row = match
         else:
             cc_row = cc_rows
@@ -1261,9 +1280,7 @@ class Account(BaseModel):
         return "Paper wallet reset from Luno balances"
 
     # ---------------- Portfolio apply ----------------
-    def _apply_portfolio_buy(
-        self, base_asset: str, qty: float, cost: float
-    ) -> None:
+    def _apply_portfolio_buy(self, base_asset: str, qty: float, cost: float) -> None:
         balance = float(self.balance)
         if cost > balance:
             raise ValueError("insufficient balance")
@@ -1413,9 +1430,7 @@ class Account(BaseModel):
             spread_pct=spread_pct,
         )
 
-    def get_max_limit_buy_qty(
-        self, market_id: str, price: float
-    ) -> LimitSizeResult:
+    def get_max_limit_buy_qty(self, market_id: str, price: float) -> LimitSizeResult:
         """
         Compute the maximum BUY limit quantity based on available MYR balance.
         """
@@ -2256,7 +2271,9 @@ class Account(BaseModel):
                 order=result,
             )
 
-        record = self._find_order_record(order_id=order_id, client_order_id=client_order_id)
+        record = self._find_order_record(
+            order_id=order_id, client_order_id=client_order_id
+        )
         if record is None:
             return OrderResult(
                 ok=False,
@@ -2305,7 +2322,9 @@ class Account(BaseModel):
                 client_order_id=client_order_id,
             )
             updated = False
-            record = self._find_order_record(order_id=order_id, client_order_id=client_order_id)
+            record = self._find_order_record(
+                order_id=order_id, client_order_id=client_order_id
+            )
             if record is None and isinstance(result, dict):
                 client_id = _extract_str_field(result, ["client_order_id"])
                 prefix = f"{_sanitize_client_order_prefix(self.name)}-"
@@ -2321,7 +2340,9 @@ class Account(BaseModel):
                         ),
                         "order_type": "LIMIT",
                         "price": _extract_float_field(result, ["limit_price", "price"]),
-                        "volume": _extract_float_field(result, ["limit_volume", "volume"]),
+                        "volume": _extract_float_field(
+                            result, ["limit_volume", "volume"]
+                        ),
                         "state": _normalize_order_state(result.get("state")),
                         "created_at": _ts_ms_to_iso(result.get("creation_timestamp"))
                         or _utc_now_iso(),
@@ -2349,7 +2370,9 @@ class Account(BaseModel):
                 order=result,
             )
 
-        record = self._find_order_record(order_id=order_id, client_order_id=client_order_id)
+        record = self._find_order_record(
+            order_id=order_id, client_order_id=client_order_id
+        )
         if record is None:
             return OrderResult(
                 ok=False,
@@ -2393,7 +2416,9 @@ class Account(BaseModel):
                     continue
                 order_id = _extract_str_field(order, ["order_id", "id"])
                 client_id = _extract_str_field(order, ["client_order_id"])
-                record = self._find_order_record(order_id=order_id, client_order_id=client_id)
+                record = self._find_order_record(
+                    order_id=order_id, client_order_id=client_id
+                )
                 if record is None and client_id and client_id.startswith(prefix):
                     record = {
                         "order_id": order_id,
@@ -2406,7 +2431,9 @@ class Account(BaseModel):
                         ),
                         "order_type": "LIMIT",
                         "price": _extract_float_field(order, ["limit_price", "price"]),
-                        "volume": _extract_float_field(order, ["limit_volume", "volume"]),
+                        "volume": _extract_float_field(
+                            order, ["limit_volume", "volume"]
+                        ),
                         "state": _normalize_order_state(order.get("state")),
                         "created_at": _ts_ms_to_iso(order.get("creation_timestamp"))
                         or _utc_now_iso(),
